@@ -1,0 +1,521 @@
+Connecting to Firebird database...
+Successfully connected!
+
+Found 39 user tables:
+ - ACTIONLIST
+ - AUDIOFORMAT
+ - CASTCREW
+ - CERTIFICATIONLIST
+ - COUNTRYLIST
+ - COVER_TEMP
+ - DB_INFO
+ - FEATURES
+ - FILETYPES
+ - FILMINGLOCATION
+ - FORMAT
+ - FORMATLIST
+ - GENRE
+ - GENRELIST
+ - IMPORT_MOVIE
+ - KEYWORD
+ - KEYWORDLIST
+ - LANGUAGE
+ - LANGUAGELIST
+ - LENDLIST
+ - MEDIA
+ - MEDIATYPE
+ - MEDIA_GFX
+ - MOVIE
+ - MOVIEAWARDS
+ - MOVIEAWARDS_PERSON
+ - MOVIEFILES
+ - MOVIEGROUP
+ - PERSON
+ - ROLE_
+ - SORT_OMIT
+ - SOUNDTRACK
+ - SUBTITLES
+ - TECHNICALDATA
+ - TECHNICALDATALIST
+ - TITLECLEANING
+ - TVSERIES
+ - USERVIEW
+ - WANTLIST
+
+--- TABLE SCHEMAS ---
+
+Table: ACTIONLIST
+  - ACTION_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=100)
+  Sample Rows (up to 2):
+    Columns: ['ACTION_ID', 'NAME']
+    Row 1: ['0', 'Buy']
+    Row 2: ['1', 'Watch']
+
+Table: AUDIOFORMAT
+  - AUDIOFORMAT_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=200)
+  Sample Rows (up to 2):
+    Columns: ['AUDIOFORMAT_ID', 'NAME']
+    Row 1: ['1', 'Dolby Digital 2.0']
+    Row 2: ['2', 'Dolby Digital 5.1']
+
+Table: CASTCREW
+  - MOVIE_ID: FLOAT (len=4)
+  - PERSON_ID: FLOAT (len=4)
+  - ROLE_ID: INTEGER (len=4)
+  - LISTINDEX: INTEGER (len=4)
+  - CHARACTERNAME: VARCHAR (len=600)
+  - LEADROLE: SMALLINT (len=2)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'PERSON_ID', 'ROLE_ID', 'LISTINDEX', 'CHARACTERNAME', 'LEADROLE']
+    Row 1: ['6368.0', '20402.0', '0', '1', 'Cham Lau', 'None']
+    Row 2: ['6368.0', '162383.0', '0', '2', 'Wong To                                \r\n                                (as Liu Cya)', 'None']
+
+Table: CERTIFICATIONLIST
+  - CERTIFICATION_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=120)
+  - DESCRIPTION: VARCHAR (len=1020)
+  Sample Rows (up to 2):
+    Columns: ['CERTIFICATION_ID', 'NAME', 'DESCRIPTION']
+    Row 1: ['0', 'G', 'General Audiences. All ages admitted.']
+    Row 2: ['1', 'PG', 'Parental Guidance suggested. Some material may not be suitable for children.']
+
+Table: COUNTRYLIST
+  - COUNTRY_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=300)
+  Sample Rows (up to 2):
+    Columns: ['COUNTRY_ID', 'NAME']
+    Row 1: ['1', 'USA']
+    Row 2: ['2', 'Canada']
+
+Table: COVER_TEMP
+  - AUTOINDEX: INTEGER (len=4)
+  - TITLE: VARCHAR (len=400)
+  - SUBINFO: VARCHAR (len=400)
+  - FRONTCOVER_URL: VARCHAR (len=1020)
+  - FRONTCOVER_BLOB: BLOB (subtype=-2) (len=8)
+  - PRODUCTIONYEAR: VARCHAR (len=16)
+  Sample Rows (up to 2):
+    Columns: ['AUTOINDEX', 'TITLE', 'SUBINFO', 'FRONTCOVER_URL', 'FRONTCOVER_BLOB', 'PRODUCTIONYEAR']
+    Row 1: ['15', 'None', 'None', '/Melody-Headband-Character-Charm-Plush/dp/B0CYDJ5PK2/ref=sr_1_15?dib=eyJ2IjoiMSJ9.00lfxraZ4LjDtc35tt', '<BYTES len=35807>', 'None']
+    Row 2: ['16', 'None', 'None', '/604551-Furenzu-Accessory-Supplies-Character/dp/B0CSVB8MFT/ref=sr_1_16?dib=eyJ2IjoiMSJ9.00lfxraZ4LjD', '<BYTES len=44484>', 'None']
+
+Table: DB_INFO
+  - VERSION: INTEGER (len=4)
+  - THUMBNAILSIZE: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['VERSION', 'THUMBNAILSIZE']
+    Row 1: ['20208', '10']
+
+Table: FEATURES
+  - MOVIE_ID: FLOAT (len=4)
+  - AUTOINDEX: INTEGER (len=4)
+  - NAME: VARCHAR (len=500)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'AUTOINDEX', 'NAME']
+
+Table: FILETYPES
+  - FILETYPE_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=24)
+  Sample Rows (up to 2):
+    Columns: ['FILETYPE_ID', 'NAME']
+    Row 1: ['1', 'avi']
+    Row 2: ['2', 'mov']
+
+Table: FILMINGLOCATION
+  - MOVIE_ID: FLOAT (len=4)
+  - AUTOINDEX: INTEGER (len=4)
+  - NAME: VARCHAR (len=600)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'AUTOINDEX', 'NAME']
+    Row 1: ['5373.0', '34617', 'Quebec City, Quebec, Canada']
+    Row 2: ['5373.0', '34618', 'Quebec, Canada']
+
+Table: FORMAT
+  - MOVIE_ID: FLOAT (len=4)
+  - FORMAT_ID: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'FORMAT_ID']
+    Row 1: ['3571.0', '8']
+
+Table: FORMATLIST
+  - FORMAT_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=140)
+  - DESCRIPTION: VARCHAR (len=1020)
+  Sample Rows (up to 2):
+    Columns: ['FORMAT_ID', 'NAME', 'DESCRIPTION']
+    Row 1: ['1', '4:3', 'None']
+    Row 2: ['2', '16:9', 'None']
+
+Table: GENRE
+  - MOVIE_ID: FLOAT (len=4)
+  - GENRE_ID: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'GENRE_ID']
+    Row 1: ['4868.0', '7']
+    Row 2: ['4868.0', '4']
+
+Table: GENRELIST
+  - GENRE_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=240)
+  Sample Rows (up to 2):
+    Columns: ['GENRE_ID', 'NAME']
+    Row 1: ['0', 'Action']
+    Row 2: ['1', 'Thriller']
+
+Table: IMPORT_MOVIE
+  - IMPORT_MOVIE_ID: INTEGER (len=4)
+  - PARENT_ID: INTEGER (len=4)
+  - MEDIATYPE_ID: INTEGER (len=4)
+  - IMDBID: INTEGER (len=4)
+  - TITLE: VARCHAR (len=600)
+  - FILE_CODECNAME: VARCHAR (len=80)
+  - FILE_FORMAT: VARCHAR (len=100)
+  - FILE_VIDEOSIZE: VARCHAR (len=44)
+  - FILE_BITRATE: INTEGER (len=4)
+  - FILE_FRAMERATE: INTEGER (len=4)
+  - FILE_STANDARD: VARCHAR (len=60)
+  - FILE_RESOLUTION: INTEGER (len=4)
+  - FILEPATH: VARCHAR (len=2000)
+  - FILE_MAXBITRATE: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['IMPORT_MOVIE_ID', 'PARENT_ID', 'MEDIATYPE_ID', 'IMDBID', 'TITLE', 'FILE_CODECNAME', 'FILE_FORMAT', 'FILE_VIDEOSIZE', 'FILE_BITRATE', 'FILE_FRAMERATE', 'FILE_STANDARD', 'FILE_RESOLUTION', 'FILEPATH', 'FILE_MAXBITRATE']
+
+Table: KEYWORD
+  - MOVIE_ID: FLOAT (len=4)
+  - KEYWORD_ID: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'KEYWORD_ID']
+    Row 1: ['3242.0', '3886']
+    Row 2: ['3242.0', '3421']
+
+Table: KEYWORDLIST
+  - KEYWORD_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=120)
+  Sample Rows (up to 2):
+    Columns: ['KEYWORD_ID', 'NAME']
+    Row 1: ['1', 'Fight']
+    Row 2: ['2', 'Golf Club']
+
+Table: LANGUAGE
+  - MOVIE_ID: FLOAT (len=4)
+  - LANGUAGE_ID: INTEGER (len=4)
+  - AUDIOFORMAT_ID: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'LANGUAGE_ID', 'AUDIOFORMAT_ID']
+
+Table: LANGUAGELIST
+  - LANGUAGE_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=240)
+  Sample Rows (up to 2):
+    Columns: ['LANGUAGE_ID', 'NAME']
+    Row 1: ['1', 'Persian']
+    Row 2: ['2', 'Afrikaans']
+
+Table: LENDLIST
+  - LEND_ID: INTEGER (len=4)
+  - IDNUMBER: INTEGER (len=4)
+  - NAME: VARCHAR (len=400)
+  - PHONE: VARCHAR (len=60)
+  - EMAIL: VARCHAR (len=600)
+  - COMMENTS: VARCHAR (len=1020)
+  Sample Rows (up to 2):
+    Columns: ['LEND_ID', 'IDNUMBER', 'NAME', 'PHONE', 'EMAIL', 'COMMENTS']
+
+Table: MEDIA
+  - MEDIA_ID: FLOAT (len=4)
+  - TITLE: VARCHAR (len=600)
+  - TITLESORT: VARCHAR (len=600)
+  - MEDIATIME: INTEGER (len=4)
+  - LENDDATE: TIMESTAMP (len=8)
+  - EDITION: VARCHAR (len=300)
+  - SEQNUMBER: INTEGER (len=4)
+  - MEDIATYPE_ID: INTEGER (len=4)
+  - REGIONCODE: INTEGER (len=4)
+  - UPC: VARCHAR (len=52)
+  - LOCATION: VARCHAR (len=200)
+  - STATUS: VARCHAR (len=200)
+  - BUYPRICE: FLOAT (len=4)
+  - BUYDATE: TIMESTAMP (len=8)
+  - LEND_ID: INTEGER (len=4)
+  - NOOFDISCS: INTEGER (len=4)
+  - DECK: INTEGER (len=4)
+  - SLOT: INTEGER (len=4)
+  - TVSERIES: SMALLINT (len=2)
+  - FRONTCOVER_BLOB: BLOB (subtype=-2) (len=8)
+  - BACKCOVER_BLOB: BLOB (subtype=-2) (len=8)
+  - DATE_ADDED: TIMESTAMP (len=8)
+  - DATE_MODIFIED: TIMESTAMP (len=8)
+  - MEDIAOWNER: VARCHAR (len=200)
+  - LEND_RETURNDATE: TIMESTAMP (len=8)
+  Sample Rows (up to 2):
+    Columns: ['MEDIA_ID', 'TITLE', 'TITLESORT', 'MEDIATIME', 'LENDDATE', 'EDITION', 'SEQNUMBER', 'MEDIATYPE_ID', 'REGIONCODE', 'UPC', 'LOCATION', 'STATUS', 'BUYPRICE', 'BUYDATE', 'LEND_ID', 'NOOFDISCS', 'DECK', 'SLOT', 'TVSERIES', 'FRONTCOVER_BLOB', 'BACKCOVER_BLOB', 'DATE_ADDED', 'DATE_MODIFIED', 'MEDIAOWNER', 'LEND_RETURNDATE']
+    Row 1: ['17.0', 'Suicide Squad', 'suicide squad', '0', 'None', '', '4447', '0', '0', '', '', '', '0.0', '1899-12-30 00:00:00', 'None', '0', '0', '0', 'None', '<BYTES len=36582>', 'None', '2017-02-09 00:00:00', '2021-11-09 00:00:00', '', 'None']
+    Row 2: ['8404.0', 'Mauvaises herbes', 'mauvaises herbes', '0', 'None', '', '3074', '0', '0', '', '', '', '0.0', '1899-12-30 00:00:00', 'None', '0', '0', '0', 'None', '<BYTES len=29152>', 'None', '2022-04-05 00:00:00', '2022-04-05 00:00:00', '', 'None']
+
+Table: MEDIATYPE
+  - MEDIATYPE_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=120)
+  - READONLY: INTEGER (len=4)
+  - DESCRIPTION: VARCHAR (len=1020)
+  - SPECIFYLENGTH: INTEGER (len=4)
+  - VIEWCONTENTS: INTEGER (len=4)
+  - ICON_BLOB: BLOB (subtype=-2) (len=8)
+  Sample Rows (up to 2):
+    Columns: ['MEDIATYPE_ID', 'NAME', 'READONLY', 'DESCRIPTION', 'SPECIFYLENGTH', 'VIEWCONTENTS', 'ICON_BLOB']
+    Row 1: ['0', 'Harddrive', '0', '', '0', '0', '<BYTES len=1607>']
+    Row 2: ['1', 'DVD', '1', '', '0', '0', '<BYTES len=948>']
+
+Table: MEDIA_GFX
+  - MEDIA_ID: FLOAT (len=4)
+  - FRONTCOVER_BLOB: BLOB (subtype=-2) (len=8)
+  - BACKCOVER_BLOB: BLOB (subtype=-2) (len=8)
+  Sample Rows (up to 2):
+    Columns: ['MEDIA_ID', 'FRONTCOVER_BLOB', 'BACKCOVER_BLOB']
+    Row 1: ['7909.0', '<BYTES len=12800>', 'None']
+    Row 2: ['7.0', '<BYTES len=41930>', 'None']
+
+Table: MOVIE
+  - MEDIA_ID: FLOAT (len=4)
+  - MOVIE_ID: FLOAT (len=4)
+  - LISTINDEX: INTEGER (len=4)
+  - TITLE: VARCHAR (len=600)
+  - TITLESORT: VARCHAR (len=600)
+  - STUDIO: VARCHAR (len=320)
+  - RELEASEDATE: TIMESTAMP (len=8)
+  - THEATERDATE: TIMESTAMP (len=8)
+  - MOVIETIME: INTEGER (len=4)
+  - OFFICIALSITE: VARCHAR (len=800)
+  - TAGLINE: VARCHAR (len=1200)
+  - USERRATING: INTEGER (len=4)
+  - IMDBID: INTEGER (len=4)
+  - ORIGTITLE: VARCHAR (len=600)
+  - ORIGTITLESORT: VARCHAR (len=600)
+  - CLIPPATH: VARCHAR (len=1020)
+  - PLOTOUTLINE: VARCHAR (len=1200)
+  - PLOT: BLOB (subtype=1) (len=8)
+  - COMMENTS: BLOB (subtype=1) (len=8)
+  - CERTIFICATION_ID: INTEGER (len=4)
+  - COUNTRY_ID: INTEGER (len=4)
+  - BUDGET: FLOAT (len=4)
+  - DISCNO: INTEGER (len=4)
+  - SERIESNAME: VARCHAR (len=400)
+  - SEASON: INTEGER (len=4)
+  - WATCHED: SMALLINT (len=2)
+  - LASTWATCHEDDATE: TIMESTAMP (len=8)
+  - FEATURESWATCHED: SMALLINT (len=2)
+  - PRODUCTIONYEAR: VARCHAR (len=16)
+  - IMDBRATING: FLOAT (len=4)
+  - FILE_CODECNAME: VARCHAR (len=80)
+  - FILE_FORMAT: VARCHAR (len=100)
+  - FILE_VIDEOSIZE: VARCHAR (len=44)
+  - FILE_BITRATE: INTEGER (len=4)
+  - FILE_FRAMERATE: INTEGER (len=4)
+  - FILE_STANDARD: VARCHAR (len=60)
+  - FILE_RESOLUTION: INTEGER (len=4)
+  - ORIGINAL_LANGUAGE_ID: INTEGER (len=4)
+  - TRIVIA: BLOB (subtype=1) (len=8)
+  - HTTPERROR: SMALLINT (len=2)
+  - THREED_ENABLED: SMALLINT (len=2)
+  - GROUP_ID: INTEGER (len=4)
+  - GROUP_INDEX: SMALLINT (len=2)
+  - TEMP_TAG: SMALLINT (len=2)
+  - GROSSREVENUE: FLOAT (len=4)
+  - DOWNLOAD_TYPE: VARCHAR (len=200)
+  - DOWNLOAD_CODE: VARCHAR (len=200)
+  - ROTTEN_RATING: SMALLINT (len=2)
+  - FOURK_ENABLED: SMALLINT (len=2)
+  - FILE_MAXBITRATE: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['MEDIA_ID', 'MOVIE_ID', 'LISTINDEX', 'TITLE', 'TITLESORT', 'STUDIO', 'RELEASEDATE', 'THEATERDATE', 'MOVIETIME', 'OFFICIALSITE', 'TAGLINE', 'USERRATING', 'IMDBID', 'ORIGTITLE', 'ORIGTITLESORT', 'CLIPPATH', 'PLOTOUTLINE', 'PLOT', 'COMMENTS', 'CERTIFICATION_ID', 'COUNTRY_ID', 'BUDGET', 'DISCNO', 'SERIESNAME', 'SEASON', 'WATCHED', 'LASTWATCHEDDATE', 'FEATURESWATCHED', 'PRODUCTIONYEAR', 'IMDBRATING', 'FILE_CODECNAME', 'FILE_FORMAT', 'FILE_VIDEOSIZE', 'FILE_BITRATE', 'FILE_FRAMERATE', 'FILE_STANDARD', 'FILE_RESOLUTION', 'ORIGINAL_LANGUAGE_ID', 'TRIVIA', 'HTTPERROR', 'THREED_ENABLED', 'GROUP_ID', 'GROUP_INDEX', 'TEMP_TAG', 'GROSSREVENUE', 'DOWNLOAD_TYPE', 'DOWNLOAD_CODE', 'ROTTEN_RATING', 'FOURK_ENABLED', 'FILE_MAXBITRATE']
+    Row 1: ['3581.0', '3588.0', '1', 'Ballada o soldate', 'ballada o soldate', 'None', 'None', '1959-12-01 00:00:00', '88', 'None', "The Critics All Agree It's Great...And So Will You!", 'None', '52600', 'Ballada o soldate', 'ballada o soldate', '', 'Young Russian soldier Alyosha earns a medal, but asks to visit his mother instead. His journey recou', 'During World War II, 19 year old soldier Alyosha gets a medal as a reward for a heroic act at the fr', 'None', '14', '508', 'None', 'None', 'None', 'None', 'None', 'None', 'None', '1959', '8.199999809265137', '', 'AVC', '790x576', '1800000', '24', '', '0', '37', 'The film was a success all over the world. As a result, the film received a 101 foreign award.\r\n\r\nTh', '0', 'None', 'None', 'None', 'None', 'None', 'None', 'None', '93', 'None', '40000000']
+    Row 2: ['3028.0', '3032.0', '1', 'Chocolat', 'chocolat', 'None', 'None', '2016-02-03 00:00:00', '119', 'None', 'The true story of the first black artist.', 'None', '4400038', 'Chocolat', 'chocolat', 'http://www.imdb.com/videoplayer/vi2489498137', 'e and fall of the famous clown Chocolat, the first black circus performer who revolutionised the sta', '">Plot Summary</td>            <td>                    <p>                        The life story of ', 'None', 'None', '81', 'None', 'None', 'None', 'None', 'None', 'None', 'None', '2016', '7.0', '', 'AVC', '1276x688', '1798378', '24', '', '8', '15', 'James Thierree is the grandson of Charlie Chaplin.\r\n\r\nIn France the film had 1.68 million admissions', '0', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', '8421976']
+
+Table: MOVIEAWARDS
+  - MOVIE_ID: FLOAT (len=4)
+  - AUTOINDEX: INTEGER (len=4)
+  - ORGANIZATION: VARCHAR (len=400)
+  - NAME: VARCHAR (len=400)
+  - AWARDYEAR: SMALLINT (len=2)
+  - RESULT: SMALLINT (len=2)
+  - CATEGORY: VARCHAR (len=320)
+  - NOTE: VARCHAR (len=600)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'AUTOINDEX', 'ORGANIZATION', 'NAME', 'AWARDYEAR', 'RESULT', 'CATEGORY', 'NOTE']
+    Row 1: ['7.0', '1', 'Academy Awards, USA', 'Oscar', '1961', '0', 'Best Music, Scoring of a Dramatic or Comedy Picture', '']
+    Row 2: ['7.0', '2', 'Golden Globes, USA', 'Golden Globe', '1961', '0', 'Most Promising Newcomer - Male', '']
+
+Table: MOVIEAWARDS_PERSON
+  - MOVIE_ID: FLOAT (len=4)
+  - AUTOINDEX: INTEGER (len=4)
+  - PERSON_ID: FLOAT (len=4)
+  - NOTE: VARCHAR (len=200)
+  - TEMPORARY: SMALLINT (len=2)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'AUTOINDEX', 'PERSON_ID', 'NOTE', 'TEMPORARY']
+    Row 1: ['3781.0', '2', '111520.0', '', 'None']
+    Row 2: ['3781.0', '3', '105947.0', '', 'None']
+
+Table: MOVIEFILES
+  - MOVIE_ID: FLOAT (len=4)
+  - LISTINDEX: SMALLINT (len=2)
+  - FILEPATH: VARCHAR (len=2000)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'LISTINDEX', 'FILEPATH']
+    Row 1: ['3045.0', '1', 'e:\\movies\\picnic.梦旅人.1996.中文字幕.vod.720p.mp4']
+    Row 2: ['8238.0', '1', 'e:\\movies\\a long way down.[2014].[自杀俱乐部.bd.720p.中英双字幕.rmvb']
+
+Table: MOVIEGROUP
+  - GROUP_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=600)
+  Sample Rows (up to 2):
+    Columns: ['GROUP_ID', 'NAME']
+
+Table: PERSON
+  - PERSON_ID: FLOAT (len=4)
+  - BIRTHYEAR: VARCHAR (len=16)
+  - BIO: BLOB (subtype=1) (len=8)
+  - IMDBID: INTEGER (len=4)
+  - NAME: VARCHAR (len=600)
+  - PICTURE: BLOB (subtype=-2) (len=8)
+  - TRIVIA: BLOB (subtype=1) (len=8)
+  Sample Rows (up to 2):
+    Columns: ['PERSON_ID', 'BIRTHYEAR', 'BIO', 'IMDBID', 'NAME', 'PICTURE', 'TRIVIA']
+    Row 1: ['1.0', '1930', 'Albert S. Ruddy was born on March 28, 1930 in Montreal, Quebec, Canada. He is a writer and producer,', '748665', 'Albert S. Ruddy', 'None', 'At The 45th Annual Academy Awards (1973), Clint Eastwood presented the 1972 Best Picture Oscar to Ru']
+    Row 2: ['2.0', '1924', 'Marlon Brando is widely considered the greatest movie actor of all time, rivaled only by the more th', '8', 'Marlon Brando', '<BYTES len=19638>', 'Ranked #13 in Empire (UK) magazine\'s "The Top 100 Movie Stars of All Time" list. [October 1997]\r\n\r\nH']
+
+Table: ROLE_
+  - ROLE_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=240)
+  - DESCRIPTION: VARCHAR (len=1020)
+  Sample Rows (up to 2):
+    Columns: ['ROLE_ID', 'NAME', 'DESCRIPTION']
+    Row 1: ['0', 'Actor', 'A person who plays the role of a character. Historically, the term Actor refered exclusively to male']
+    Row 2: ['1', 'Director', 'The principal creative artist on a movie set. A director is usually (but not always) the driving art']
+
+Table: SORT_OMIT
+  - AUTOINDEX: INTEGER (len=4)
+  - WORDTOOMIT: VARCHAR (len=40)
+  Sample Rows (up to 2):
+    Columns: ['AUTOINDEX', 'WORDTOOMIT']
+    Row 1: ['1', 'the']
+    Row 2: ['2', 'a']
+
+Table: SOUNDTRACK
+  - MOVIE_ID: FLOAT (len=4)
+  - AUTOINDEX: INTEGER (len=4)
+  - TITLE: VARCHAR (len=400)
+  - PERFORMER: VARCHAR (len=800)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'AUTOINDEX', 'TITLE', 'PERFORMER']
+    Row 1: ['7813.0', '1', 'Excerpts from Siegfried', '']
+    Row 2: ['7813.0', '2', 'Fantasie aus Walküre', 'Edison-Orchester Berlin']
+
+Table: SUBTITLES
+  - MOVIE_ID: FLOAT (len=4)
+  - LANGUAGE_ID: INTEGER (len=4)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'LANGUAGE_ID']
+
+Table: TECHNICALDATA
+  - MOVIE_ID: FLOAT (len=4)
+  - AUTOINDEX: INTEGER (len=4)
+  - TECHNICALDATA_ID: INTEGER (len=4)
+  - DATAVALUE: VARCHAR (len=400)
+  Sample Rows (up to 2):
+    Columns: ['MOVIE_ID', 'AUTOINDEX', 'TECHNICALDATA_ID', 'DATAVALUE']
+    Row 1: ['6368.0', '1', '1', 'Black and White']
+    Row 2: ['3781.0', '1', '1', 'Color\n        (Eastmancolor)']
+
+Table: TECHNICALDATALIST
+  - TECHNICALDATA_ID: FLOAT (len=4)
+  - NAME: VARCHAR (len=280)
+  Sample Rows (up to 2):
+    Columns: ['TECHNICALDATA_ID', 'NAME']
+    Row 1: ['1.0', 'Color']
+    Row 2: ['2.0', 'Negative Format']
+
+Table: TITLECLEANING
+  - TITLECLEANING_ID: INTEGER (len=4)
+  - CLEANSTRING: VARCHAR (len=160)
+  - REPLACEWITH: VARCHAR (len=160)
+  Sample Rows (up to 2):
+    Columns: ['TITLECLEANING_ID', 'CLEANSTRING', 'REPLACEWITH']
+    Row 1: ['1', '[迅雷下载www Quanji Com]', '']
+    Row 2: ['2', '[阳光电影www Ygdy8 Com] ', '']
+
+Table: TVSERIES
+  - TVSERIES_ID: INTEGER (len=4)
+  - MOVIE_ID: FLOAT (len=4)
+  - EPISODE: SMALLINT (len=2)
+  - EPISODENAME: VARCHAR (len=600)
+  - EPISODETIME: SMALLINT (len=2)
+  - LASTWATCHEDDATE: DATE (len=4)
+  - AIRDATE: DATE (len=4)
+  - RATING: SMALLINT (len=2)
+  - FILEPATH: VARCHAR (len=1020)
+  - PLOT: BLOB (subtype=1) (len=8)
+  Sample Rows (up to 2):
+    Columns: ['TVSERIES_ID', 'MOVIE_ID', 'EPISODE', 'EPISODENAME', 'EPISODETIME', 'LASTWATCHEDDATE', 'AIRDATE', 'RATING', 'FILEPATH', 'PLOT']
+    Row 1: ['9', '8957.0', '1', 'Episode #1.1', '208', '1899-12-30', '2007-05-09', '0', '', 'Know what this is about?']
+    Row 2: ['10', '8957.0', '2', 'Episode #1.2', '208', '1899-12-30', '2007-05-09', '0', '', 'Know what this is about?']
+
+Table: USERVIEW
+  - USERVIEW_ID: INTEGER (len=4)
+  - NAME: VARCHAR (len=240)
+  - DBFIELD1: VARCHAR (len=100)
+  - DBFIELD2: VARCHAR (len=100)
+  - DBFIELD3: VARCHAR (len=100)
+  - DBOPERATOR1: VARCHAR (len=60)
+  - DBOPERATOR2: VARCHAR (len=60)
+  - DBOPERATOR3: VARCHAR (len=60)
+  - DBVALUE1: VARCHAR (len=120)
+  - DBVALUE2: VARCHAR (len=120)
+  - DBVALUE3: VARCHAR (len=120)
+  - DBCONDITION: VARCHAR (len=12)
+  - SORT1: VARCHAR (len=100)
+  - SORT2: VARCHAR (len=100)
+  - SORT3: VARCHAR (len=100)
+  - SORT4: VARCHAR (len=100)
+  - SORT5: VARCHAR (len=100)
+  - INIFILE_BLOB: BLOB (subtype=1) (len=8)
+  - LISTINDEX: INTEGER (len=4)
+  - ICONINDEX: SMALLINT (len=2)
+  - SQLLIMIT: SMALLINT (len=2)
+  - DBFIELD4: VARCHAR (len=100)
+  - DBOPERATOR4: VARCHAR (len=60)
+  - DBVALUE4: VARCHAR (len=120)
+  - INIFILE_BLOB_TABLE: BLOB (subtype=1) (len=8)
+  - INIFILE_BLOB_CARD1: BLOB (subtype=1) (len=8)
+  - INIFILE_BLOB_CARD2: BLOB (subtype=1) (len=8)
+  Sample Rows (up to 2):
+    Columns: ['USERVIEW_ID', 'NAME', 'DBFIELD1', 'DBFIELD2', 'DBFIELD3', 'DBOPERATOR1', 'DBOPERATOR2', 'DBOPERATOR3', 'DBVALUE1', 'DBVALUE2', 'DBVALUE3', 'DBCONDITION', 'SORT1', 'SORT2', 'SORT3', 'SORT4', 'SORT5', 'INIFILE_BLOB', 'LISTINDEX', 'ICONINDEX', 'SQLLIMIT', 'DBFIELD4', 'DBOPERATOR4', 'DBVALUE4', 'INIFILE_BLOB_TABLE', 'INIFILE_BLOB_CARD1', 'INIFILE_BLOB_CARD2']
+    Row 1: ['7', 'TD', 'IMDBRATING', 'MEDIATYPE_ID', 'TITLE', '<', 'contains', 'contains', '6', '', '', '', 'FILE_BITRATE DESC', '', '', '', '', '[Main]\r\nVersion=2\r\n\r\n[ViewManager_frm.grid_ViewEntryDBTableView1: TcxGridDBTableView]\r\n=\r\nSourceDPI=', '4', '2', '0', 'TITLE', 'contains', '', '[Main]\r\nVersion=2\r\n\r\n[ViewManager_frm.grid_ViewEntryDBTableView1: TcxGridDBTableView]\r\n=\r\nSourceDPI=', '[Main]\r\nVersion=2\r\n\r\n[ViewManager_frm.grid_EntryCardDBCardView1: TcxGridDBCardView]\r\n=\r\nSourceDPI=96', 'None']
+    Row 2: ['3', 'Not yet Watched', 'WATCHED', 'FILE_BITRATE', 'FILE_BITRATE', '=', 'like', 'like', '0', '', '', '', 'TITLESORT ASC', '', '', '', '', '[Main]\r\nVersion=2\r\n\r\n[ViewManager_frm.grid_EntryCardDBCardView2: TcxGridDBCardView]\r\n=\r\nSourceDPI=96', '1', '23', 'None', 'None', 'None', 'None', 'None', 'None', '[Main]\r\nVersion=2\r\n\r\n[ViewManager_frm.grid_EntryCardDBCardView2: TcxGridDBCardView]\r\n=\r\nSourceDPI=96']
+
+Table: WANTLIST
+  - AUTOINDEX: FLOAT (len=4)
+  - PRIORITY: INTEGER (len=4)
+  - TITLE: VARCHAR (len=600)
+  - RELEASEDATE: TIMESTAMP (len=8)
+  - THEATREDATE: TIMESTAMP (len=8)
+  - WHEREHEARD: VARCHAR (len=240)
+  - COMMENT: VARCHAR (len=1020)
+  - BUYPRICE: FLOAT (len=4)
+  - MEDIATYPE_ID: INTEGER (len=4)
+  - ORDERED: INTEGER (len=4)
+  - ORDEREDFROM: VARCHAR (len=120)
+  - IMDBID: INTEGER (len=4)
+  - SERIESNAME: VARCHAR (len=300)
+  - SEASON: INTEGER (len=4)
+  - FRONTCOVER_BLOB: BLOB (subtype=-2) (len=8)
+  - CLIPPATH: VARCHAR (len=1020)
+  - DATE_ADDED: TIMESTAMP (len=8)
+  - DATE_MODIFIED: TIMESTAMP (len=8)
+  - ACTION_ID: INTEGER (len=4)
+  - USERRATING: INTEGER (len=4)
+  - WATCHED: SMALLINT (len=2)
+  - LASTWATCHEDDATE: TIMESTAMP (len=8)
+  Sample Rows (up to 2):
+    Columns: ['AUTOINDEX', 'PRIORITY', 'TITLE', 'RELEASEDATE', 'THEATREDATE', 'WHEREHEARD', 'COMMENT', 'BUYPRICE', 'MEDIATYPE_ID', 'ORDERED', 'ORDEREDFROM', 'IMDBID', 'SERIESNAME', 'SEASON', 'FRONTCOVER_BLOB', 'CLIPPATH', 'DATE_ADDED', 'DATE_MODIFIED', 'ACTION_ID', 'USERRATING', 'WATCHED', 'LASTWATCHEDDATE']

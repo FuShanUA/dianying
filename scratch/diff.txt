@@ -1,0 +1,1503 @@
+diff --git a/Projects/movie-database-revival/app.py b/Projects/movie-database-revival/app.py
+new file mode 100644
+index 0000000..bd52b28
+--- /dev/null
++++ b/Projects/movie-database-revival/app.py
+@@ -0,0 +1,1497 @@
++import streamlit as st
++import sqlite3
++import os
++import requests
++import base64
++from PIL import Image
++
++# Initialize Session State Language & Theme early
++if 'lang' not in st.session_state:
++    def load_env_var_init(var_name, default_value=""):
++        env_path = '/Users/shanfu/cc/Projects/movie-database-revival/.env'
++        if os.path.exists(env_path):
++            try:
++                with open(env_path, 'r') as f:
++                    for line in f:
++                        if line.startswith(f"{var_name}="):
++                            return line.split('=', 1)[1].strip()
++            except Exception:
++                pass
++        return default_value
++    
++    url_lang = st.query_params.get('lang')
++    if url_lang in ['zh', 'en']:
++        st.session_state.lang = url_lang
++    else:
++        env_lang = load_env_var_init('UI_LANG', 'zh')
++        st.session_state.lang = env_lang if env_lang in ['zh', 'en'] else 'zh'
++
++if 'theme' not in st.session_state:
++    st.session_state.theme = 'light'
++
++# Set page config
++st.set_page_config(
++    page_title="Movie Label Revived",
++    page_icon="🎬",
++    layout="wide",
++    initial_sidebar_state="collapsed"
++)
++
++# 🌐 Internationalization (i18n) Dictionary
++I18N = {
++    "zh": {
++        "title": "🎬 电影收藏管理系统 (Movie Label Revived)",
++        "subtitle": "您的 legacy 电影收藏数据库已无损复活、高度增强，并为未来云端同步做好准备。",
++        "settings_stats": "⚙️ 设置与统计",
++        "total_movies": "电影总数",
++        "watched": "已看占比",
++        "tmdb_key_label": "🔑 TMDB API Key (可选)",
++        "tmdb_key_help": "在 themoviedb.org 免费申请 Key 以启用高清海报下载和智能信息补全。",
++        "save_key_btn": "💾 保存 API Key",
++        "save_key_success": "API Key 已永久保存！",
++        "add_entry_title": "添加新电影",
++        "add_entry_placeholder": "输入新电影标题...",
++        "create_entry_btn": "创建电影条目",
++        "create_entry_success": "电影条目 #{id} 创建成功！",
++        "search_placeholder": "🔍 搜索电影 (支持中文名、英文名、导演、演员...)",
++        "filter_genre": "🎭 按类型筛选",
++        "filter_status": "👁️ 观看状态",
++        "filter_path": "📂 物理文件",
++        "status_all": "全部",
++        "status_seen": "已看",
++        "status_unseen": "未看",
++        "path_all": "全部",
++        "path_with": "有文件路径",
++        "path_without": "无文件路径",
++        "poster_wall_title": "🎬 电影海报墙",
++        "movies_found": "部电影已找到",
++        "prev_page": "⬅️ 上一页",
++        "next_page": "下一页 ➡️",
++        "page_info": "第 {current} 页 / 共 {total} 页",
++        "select_prompt": "👈 请在左侧海报墙中选择一部电影以查看详情、自动补全或编辑。",
++        "plot_label": "剧情梗概 (PLOT SYNOPSIS)",
++        "plot_missing": "暂无剧情简介。请使用下方的‘智能自动补全’选项卡一键填充。",
++        "director_label": "导演 (DIRECTOR)",
++        "genres_label": "类型 (GENRES)",
++        "actors_label": "演员阵容 (CAST LIST)",
++        "path_label": "📂 物理盘片位置 / 视频文件路径",
++        "path_missing": "未定义物理路径。请在下方编辑以设定位置。",
++        "tab_status": "👁️ 状态与路径",
++        "tab_auto": "🤖 智能自动补全",
++        "tab_manual": "✏️ 手动编辑字段",
++        "manage_status_title": "管理观看状态与物理路径",
++        "mark_seen_checkbox": "标记为已看 (Watched)",
++        "path_input_label": "物理盘片位置或视频文件路径:",
++        "save_status_btn": "保存状态与路径",
++        "save_status_success": "观看状态与路径更新成功！",
++        "auto_complete_title": "从 IMDb, TMDB & 豆瓣一键补全元数据",
++        "search_keywords_label": "输入搜索关键字:",
++        "search_tmdb_btn": "检索互联网索引 (TMDB & WMDB)",
++        "no_key_warning": "⚠️ TMDB API Key 是必需的。请在设置中配置并永久保存。",
++        "no_results_info": "未找到匹配记录，请尝试调整关键字。",
++        "match_this_btn": "一键匹配此项",
++        "match_success": "元数据与高清海报更新成功！",
++        "manual_edit_title": "手动微调/编辑电影基础字段",
++        "form_title": "电影标题 (Title):",
++        "form_orig_title": "原版英文名/别名 (Original Title):",
++        "form_year": "年份 (Year):",
++        "form_runtime": "片长 (分钟):",
++        "form_genres": "类型标签 (逗号分隔):",
++        "form_director": "导演 (逗号分隔):",
++        "form_actors": "演员名单 (逗号分隔):",
++        "form_plot": "剧情大纲 (Plot Synopsis):",
++        "form_imdb_id": "IMDb ID:",
++        "form_imdb_rating": "IMDb 评分:",
++        "form_douban_id": "豆瓣 ID:",
++        "form_douban_rating": "豆瓣 评分:",
++        "form_country": "制片国家:",
++        "form_tmdb_id": "TMDB ID:",
++        "form_submit": "保存手动微调内容",
++        "form_success": "电影基本字段保存成功！",
++        "batch_title": "🤖 批量元数据补全",
++        "batch_warning": "⚠️ 当前有 **{count}** 部电影缺失基本元数据。",
++        "batch_limit_label": "单次运行最大数量",
++        "batch_key_warning": "请先配置并永久保存您的 TMDB API Key 以启用批量补全。",
++        "batch_start_btn": "🚀 开始批量补全",
++        "batch_empty": "没有找到需要补全 of 电影。",
++        "batch_status_label": "正在进行批量补全，请勿关闭浏览器...",
++        "batch_status_processing": "正在补全 ({current}/{total}): {title}",
++        "batch_success": "🎉 批量运行结束！成功补全: {success} 部，跳过: {skip} 部。",
++        "unnamed_movie": "无名电影",
++        "no_alt_title": "无原版别名",
++        "unknown_year": "未知年份",
++        "unknown_runtime": "未知片长",
++        "unknown_country": "未知地区",
++        "unknown_director": "未知导演",
++        "unknown_genres": "未知类型",
++        "unknown_actors": "未知演员",
++        "unknown_val": "未知",
++        "matching_results": "### 匹配结果:",
++        "plot_outline_label": "剧情大纲: ",
++        "search_label": "🔍 搜索电影 (Search Movies)",
++        "load_more": "加载更多电影..."
++    },
++    "en": {
++        "title": "🎬 Movie Label Revived",
++        "subtitle": "Your legacy movie catalog database resurrected, enhanced, and ready for future cloud sync.",
++        "settings_stats": "⚙️ Settings & Stats",
++        "total_movies": "Total Movies",
++        "watched": "Watched Ratio",
++        "tmdb_key_label": "🔑 TMDB API Key (Optional)",
++        "tmdb_key_help": "Get a free key at themoviedb.org to enable HD poster downloading and complete metadata autocompletion.",
++        "save_key_btn": "💾 Save API Key",
++        "save_key_success": "API Key saved permanently!",
++        "add_entry_title": "Add Movie",
++        "add_entry_placeholder": "Enter new movie title...",
++        "create_entry_btn": "Create Movie Entry",
++        "create_entry_success": "Movie entry #{id} created successfully!",
++        "search_placeholder": "🔍 Search Movies (by title, original title, director, actor...)",
++        "filter_genre": "🎭 Filter by Genre",
++        "filter_status": "👁️ Watch Status",
++        "filter_path": "📂 Physical File",
++        "status_all": "All",
++        "status_seen": "Seen",
++        "status_unseen": "Unseen",
++        "path_all": "All",
++        "path_with": "With File Path",
++        "path_without": "Without File Path",
++        "poster_wall_title": "🎬 Poster Wall",
++        "movies_found": "movies found",
++        "prev_page": "⬅️ Prev",
++        "next_page": "Next ➡️",
++        "page_info": "Page {current} of {total}",
++        "select_prompt": "👈 Select a movie from the Poster Wall to inspect details, autocomplete ratings, or manage watch statuses.",
++        "plot_label": "PLOT SYNOPSIS",
++        "plot_missing": "No plot summary available. Use the Auto-Complete tab below to populate metadata instantly.",
++        "director_label": "DIRECTOR",
++        "genres_label": "GENRES",
++        "actors_label": "CAST LIST",
++        "path_label": "📂 MOVIE PATH / PHYSICAL DISCS",
++        "path_missing": "Not defined. Edit status below to define location.",
++        "tab_status": "👁️ Status & Path",
++        "tab_auto": "🤖 Auto-Complete Metadata",
++        "tab_manual": "✏️ Edit Fields Manually",
++        "manage_status_title": "Manage Status & Physical Files",
++        "mark_seen_checkbox": "Mark as Seen (Watched)",
++        "path_input_label": "Physical Disc or Movie Path:",
++        "save_status_btn": "Save Status & Location",
++        "save_status_success": "Successfully updated watch status and path details!",
++        "auto_complete_title": "Auto-Complete metadata from IMDb, TMDB & Douban",
++        "search_keywords_label": "Enter search keywords:",
++        "search_tmdb_btn": "Search TMDB & WMDB Index",
++        "no_key_warning": "⚠️ TMDB API Key is required. Please configure and permanently save it in settings.",
++        "no_results_info": "No matching records found. Try modifying the keywords.",
++        "match_this_btn": "Match This",
++        "match_success": "Metadata and high-resolution cover successfully updated!",
++        "manual_edit_title": "Manual Editing of Basic Fields",
++        "form_title": "Title:",
++        "form_orig_title": "Original Title:",
++        "form_year": "Year:",
++        "form_runtime": "Runtime (Mins):",
++        "form_genres": "Genres (comma-separated):",
++        "form_director": "Director (comma-separated):",
++        "form_actors": "Cast List (comma-separated):",
++        "form_plot": "Plot Outline:",
++        "form_imdb_id": "IMDb ID:",
++        "form_imdb_rating": "IMDb Rating:",
++        "form_douban_id": "Douban ID:",
++        "form_douban_rating": "Douban Rating:",
++        "form_country": "Country:",
++        "form_tmdb_id": "TMDB ID:",
++        "form_submit": "Save Manual Corrections",
++        "form_success": "Successfully updated movie details!",
++        "batch_title": "🤖 Batch Autocomplete",
++        "batch_warning": "⚠️ Currently **{count}** movies are missing basic metadata.",
++        "batch_limit_label": "Max movies to process in this run",
++        "batch_key_warning": "Please configure and permanently save your TMDB API Key in settings first.",
++        "batch_start_btn": "🚀 Start Batch Autocomplete",
++        "batch_empty": "No movies found that require autocompletion.",
++        "batch_status_label": "Performing batch autocomplete, do not close your browser...",
++        "batch_status_processing": "Processing ({current}/{total}): {title}",
++        "batch_success": "🎉 Batch run complete! Successfully updated: {success} movies, skipped: {skip} movies.",
++        "unnamed_movie": "Unnamed Movie",
++        "no_alt_title": "No alternative title",
++        "unknown_year": "Unknown Year",
++        "unknown_runtime": "Unknown Runtime",
++        "unknown_country": "Unknown Country",
++        "unknown_director": "Unknown Director",
++        "unknown_genres": "Unknown Genres",
++        "unknown_actors": "Unknown Cast",
++        "unknown_val": "Unknown",
++        "matching_results": "### Matching Results:",
++        "plot_outline_label": "Plot Outline: ",
++        "search_label": "🔍 Search Movies",
++        "load_more": "Load More Movies..."
++    }
++}
++
++# Translation helper function
++def t(key, **kwargs):
++    lang = st.session_state.get('lang', 'zh')
++    text = I18N[lang].get(key, key)
++    if kwargs:
++        return text.format(**kwargs)
++    return text
++
++# Dynamic Premium Color Theme Variables
++if st.session_state.theme == 'light':
++    bg_color = "#F8FAFC"
++    text_color = "#0F172A"
++    sub_text_color = "#475569"
++    card_bg = "#FFFFFF"
++    card_border = "rgba(15, 23, 42, 0.08)"
++    panel_bg = "#F1F5F9"
++    panel_border = "rgba(15, 23, 42, 0.1)"
++    scrollbar_track = "#F1F5F9"
++    scrollbar_thumb = "#CBD5E1"
++    card_hover_border = "rgba(56, 189, 248, 0.6)"
++    header_gradient = "linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%)"
++    header_border = "rgba(15, 23, 42, 0.08)"
++    header_title_color = "#0F172A"
++    code_bg = "#E2E8F0"
++    code_text = "#0F172A"
++    tab_text = "#475569"
++    active_tab_border = "#38BDF8"
++    poster_placeholder_bg = "linear-gradient(135deg, #E2E8F0 0%, #F1F5F9 100%)"
++    poster_placeholder_text = "#475569"
++else:
++    bg_color = "#0B0F19"
++    text_color = "#F8FAFC"
++    sub_text_color = "#64748B"
++    card_bg = "rgba(30, 41, 59, 0.25)"
++    card_border = "rgba(255, 255, 255, 0.04)"
++    panel_bg = "rgba(30, 41, 59, 0.25)"
++    panel_border = "rgba(255, 255, 255, 0.08)"
++    scrollbar_track = "#0B0F19"
++    scrollbar_thumb = "#1E293B"
++    card_hover_border = "rgba(56, 189, 248, 0.4)"
++    header_gradient = "linear-gradient(135deg, #121626 0%, #080A10 100%)"
++    header_border = "rgba(255, 255, 255, 0.06)"
++    header_title_color = "#F8FAFC"
++    code_bg = "#0F172A"
++    code_text = "#38BDF8"
++    tab_text = "#818CF8"
++    active_tab_border = "#38BDF8"
++    poster_placeholder_bg = "linear-gradient(135deg, #1E293B 0%, #0F172A 100%)"
++    poster_placeholder_text = "#475569"
++
++# Inject Dynamic Premium CSS for styling
++st.markdown(f"""
++<style>
++    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
++    
++    html, body, [class*="css"] {{
++        font-family: 'Outfit', sans-serif;
++    }}
++    
++    html, body, [data-testid="stAppViewContainer"], .main, .stApp {{
++        background-color: {bg_color} !important;
++        color: {text_color} !important;
++        overflow: hidden !important;
++        height: 100vh !important;
++        transition: background-color 0.3s ease, color 0.3s ease;
++    }}
++    
++    /* Completely hide Streamlit top header bar and Deploy button to save space */
++    header[data-testid="stHeader"] {{
++        display: none !important;
++    }}
++    
++    /* Hide sidebar completely */
++    section[data-testid="stSidebar"] {{
++        display: none !important;
++    }}
++    
++    /* Reclaim wasted white space and lock vertical scroll on container level */
++    div[data-testid="stAppViewBlockContainer"] {{
++        padding-top: 0.5rem !important;
++        padding-bottom: 0.5rem !important;
++        overflow: hidden !important;
++        max-width: 100% !important;
++        height: 100vh !important;
++    }}
++    
++    /* Absolutely fix the top header and filter bar so they never scroll away */
++    div[data-testid="stVerticalBlock"]:has(div.sticky-header-marker) {{
++        position: sticky !important;
++        top: 0 !important;
++        background-color: {bg_color} !important;
++        z-index: 99999 !important;
++        padding-bottom: 0.5rem !important;
++        border-bottom: 1px solid {card_border} !important;
++    }}
++
++    /* Align all filter columns to the bottom baseline so search and dropdowns are in one perfect line */
++    div[data-testid="stVerticalBlock"]:has(div.sticky-header-marker) div[data-testid="column"] {{
++        display: flex;
++        flex-direction: column;
++        justify-content: flex-end;
++    }}
++    
++    /* Force specific native Streamlit containers to perfectly fit the viewport and scroll independently */
++    div[data-testid="stVerticalBlock"]:has(> div[data-testid="element-container"] > div.poster-wall-marker) {{
++        height: calc(100vh - 175px) !important;
++        overflow-y: auto !important;
++        overflow-x: hidden !important;
++    }}
++    
++    /* Style columns within the poster wall block to be relative wrappers */
++    div[data-testid="stVerticalBlock"]:has(> div[data-testid="element-container"] > div.poster-wall-marker) div[data-testid="column"] {{
++        position: relative !important;
++        padding: 0 !important;
++    }}
++    
++    /* Make the button's element container overlay the entire column to bypass overflow clipping */
++    div[data-testid="stVerticalBlock"]:has(> div[data-testid="element-container"] > div.poster-wall-marker) div[data-testid="column"] div[data-testid="element-container"]:has(div[data-testid="stButton"]) {{
++        position: absolute !important;
++        top: 0 !important;
++        left: 0 !important;
++        width: 100% !important;
++        height: 100% !important;
++        margin: 0 !important;
++        padding: 0 !important;
++        z-index: 1000 !important;
++    }}
++    
++    div[data-testid="stVerticalBlock"]:has(> div[data-testid="element-container"] > div.poster-wall-marker) div[data-testid="column"] div[data-testid="stButton"] {{
++        width: 100% !important;
++        height: 100% !important;
++        margin: 0 !important;
++        padding: 0 !important;
++    }}
++    
++    div[data-testid="stVerticalBlock"]:has(> div[data-testid="element-container"] > div.poster-wall-marker) div[data-testid="column"] div[data-testid="stButton"] button {{
++        width: 100% !important;
++        height: 100% !important;
++        background: transparent !important;
++        border: none !important;
++        opacity: 0 !important;
++        cursor: pointer !important;
++        margin: 0 !important;
++        padding: 0 !important;
++    }}
++    
++    div[data-testid="stVerticalBlock"]:has(> div[data-testid="element-container"] > div.details-panel-marker) {{
++        height: calc(100vh - 175px) !important;
++        overflow-y: auto !important;
++        overflow-x: hidden !important;
++    }}
++    
++    /* Header styling */
++    .header-container {{
++        padding: 0.6rem 1.2rem;
++        background: {header_gradient};
++        border-radius: 12px;
++        margin-bottom: 0.5rem;
++        border: 1px solid {header_border};
++        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
++        transition: background 0.3s ease, border-color 0.3s ease;
++    }}
++    
++    .header-content {{
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        width: 100%;
++    }}
++    
++    /* POSTER GRID WALL DESIGN */
++    .poster-grid {{
++        display: grid;
++        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
++        gap: 1.25rem;
++        margin-bottom: 2rem;
++    }}
++    
++    .poster-card {{
++        background: {card_bg};
++        border: 1px solid {card_border};
++        border-radius: 12px;
++        overflow: hidden;
++        display: flex;
++        flex-direction: column;
++        text-decoration: none !important;
++        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
++        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
++    }}
++    
++    .poster-card:hover {{
++        transform: translateY(-6px);
++        border-color: {card_hover_border};
++        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.08);
++    }}
++    
++    .poster-img-container {{
++        width: 100%;
++        aspect-ratio: 2/3;
++        overflow: hidden;
++        position: relative;
++        background: #0F172A;
++    }}
++    
++    .poster-img {{
++        width: 100%;
++        height: 100%;
++        object-fit: cover;
++        transition: transform 0.5s ease;
++    }}
++    
++    .poster-card:hover .poster-img {{
++        transform: scale(1.08);
++    }}
++    
++    .poster-placeholder {{
++        width: 100%;
++        height: 100%;
++        display: flex;
++        flex-direction: column;
++        align-items: center;
++        justify-content: center;
++        background: {poster_placeholder_bg};
++        color: {poster_placeholder_text};
++        font-size: 2.2rem;
++        font-weight: 800;
++        text-align: center;
++        padding: 0.5rem;
++    }}
++    
++    .poster-placeholder-text {{
++        font-size: 0.75rem;
++        color: {sub_text_color};
++        font-weight: 600;
++        margin-top: 0.5rem;
++        white-space: nowrap;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        max-width: 90%;
++    }}
++    
++    .poster-info {{
++        padding: 0.65rem 0.5rem;
++    }}
++    
++    .poster-title {{
++        color: {text_color};
++        font-size: 0.85rem;
++        font-weight: 700;
++        white-space: nowrap;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        margin-bottom: 0.15rem;
++    }}
++    
++    .poster-meta {{
++        color: {sub_text_color};
++        font-size: 0.75rem;
++        font-weight: 600;
++        display: flex;
++        justify-content: space-between;
++    }}
++    
++    /* Selected Card Marker */
++    .poster-card-selected {{
++        border: 2px solid #38BDF8 !important;
++        background: rgba(56, 189, 248, 0.08) !important;
++    }}
++    
++    /* Premium details panel - selected by container content */
++    div[data-testid="stVerticalBlock"]:has(div.details-panel-marker) {{
++        background: {panel_bg};
++        backdrop-filter: blur(12px);
++        -webkit-backdrop-filter: blur(12px);
++        border: 1px solid {panel_border};
++        border-radius: 20px;
++        padding: 1.5rem;
++        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
++        transition: background 0.3s ease, border-color 0.3s ease;
++    }}
++    
++    .movie-poster-container {{
++        border-radius: 12px;
++        overflow: hidden;
++        box-shadow: 0 15px 30px rgba(0, 0, 0, 0.15);
++        border: 1px solid rgba(255, 255, 255, 0.1);
++        margin-bottom: 1.2rem;
++    }}
++    
++    .movie-poster-placeholder {{
++        display: flex;
++        align-items: center;
++        justify-content: center;
++        height: 360px;
++        background: {poster_placeholder_bg};
++        color: {poster_placeholder_text};
++        font-size: 4rem;
++        border-radius: 12px;
++        border: 1px dashed rgba(255, 255, 255, 0.1);
++    }}
++    
++    .movie-title-header {{
++        font-size: 1.8rem;
++        font-weight: 800;
++        color: {text_color};
++        margin-bottom: 0.25rem;
++        line-height: 1.2;
++    }}
++    
++    .movie-orig-title {{
++        font-size: 1.1rem;
++        color: {sub_text_color};
++        font-style: italic;
++        margin-bottom: 1rem;
++    }}
++    
++    /* Custom Badges */
++    .badge-container {{
++        display: flex;
++        flex-wrap: wrap;
++        gap: 0.5rem;
++        margin-bottom: 1.2rem;
++    }}
++    
++    .custom-badge {{
++        padding: 0.35rem 0.75rem;
++        border-radius: 9999px;
++        font-size: 0.75rem;
++        font-weight: 600;
++        text-transform: uppercase;
++        letter-spacing: 0.05em;
++        display: inline-flex;
++        align-items: center;
++        gap: 0.25rem;
++    }}
++    
++    .badge-year {{ background: rgba(56, 189, 248, 0.1); color: #38BDF8; border: 1px solid rgba(56, 189, 248, 0.2); }}
++    .badge-runtime {{ background: rgba(129, 140, 248, 0.1); color: #818CF8; border: 1px solid rgba(129, 140, 248, 0.2); }}
++    .badge-country {{ background: rgba(244, 63, 94, 0.1); color: #F43F5E; border: 1px solid rgba(244, 63, 94, 0.2); }}
++    
++    .badge-imdb {{ background: #E5A93B; color: #000000; font-weight: 800; }}
++    .badge-douban {{ background: #42BD56; color: #FFFFFF; font-weight: 800; }}
++    .badge-status-seen {{ background: rgba(34, 197, 94, 0.1); color: #4ADE80; border: 1px solid rgba(34, 197, 94, 0.2); }}
++    .badge-status-unseen {{ background: rgba(239, 68, 68, 0.1); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.2); }}
++    
++    .movie-metadata-label {{
++        color: {sub_text_color};
++        font-size: 0.85rem;
++        font-weight: 600;
++        text-transform: uppercase;
++        margin-bottom: 0.15rem;
++    }}
++    
++    .movie-metadata-value {{
++        color: {text_color};
++        font-size: 0.95rem;
++        margin-bottom: 1rem;
++        opacity: 0.9;
++    }}
++    
++    /* Styling scrollbars */
++    ::-webkit-scrollbar {{
++        width: 8px;
++        height: 8px;
++    }}
++    ::-webkit-scrollbar-track {{
++        background: {scrollbar_track};
++    }}
++    ::-webkit-scrollbar-thumb {{
++        background: {scrollbar_thumb};
++        border-radius: 4px;
++    }}
++    ::-webkit-scrollbar-thumb:hover {{
++        background: #334155;
++    }}
++    
++    /* Hide Streamlit Status/Running Indicator Bar */
++    [data-testid="stStatusWidget"] {{
++        display: none !important;
++    }}
++    
++    /* Override code blocks */
++    code {{
++        background-color: {code_bg} !important;
++        color: {code_text} !important;
++    }}
++    
++    /* Premium Title highlight style */
++    .title-highlight {{
++        background: linear-gradient(135deg, #38BDF8 0%, #818CF8 100%);
++        -webkit-background-clip: text;
++        -webkit-text-fill-color: transparent;
++    }}
++    
++    /* Adapter styling for inputs */
++    .stTextInput>div>div>input {{
++        background-color: {card_bg} !important;
++        color: {text_color} !important;
++        border: 1px solid {card_border} !important;
++    }}
++    
++    .stSelectbox>div>div>div {{
++        background-color: {card_bg} !important;
++        color: {text_color} !important;
++        border: 1px solid {card_border} !important;
++    }}
++
++    /* Absolutely force beautiful high-contrast text on all secondary and popover buttons */
++    .stApp button[data-testid="stPopoverButton"], 
++    .stApp button[data-testid="stBaseButton-secondary"],
++    .stApp button[data-testid="stBaseButton-secondaryFormSubmit"] {{
++        background-color: {card_bg} !important;
++        color: {text_color} !important;
++        border: 1px solid {card_border} !important;
++        border-radius: 8px !important;
++        font-weight: 600 !important;
++        transition: all 0.3s ease !important;
++    }}
++    .stApp button[data-testid="stPopoverButton"]:hover, 
++    .stApp button[data-testid="stBaseButton-secondary"]:hover,
++    .stApp button[data-testid="stBaseButton-secondaryFormSubmit"]:hover {{
++        border-color: {card_hover_border} !important;
++        background-color: rgba(56, 189, 248, 0.08) !important;
++        color: #38BDF8 !important;
++    }}
++    .stApp button[data-testid="stPopoverButton"] *, 
++    .stApp button[data-testid="stBaseButton-secondary"] *,
++    .stApp button[data-testid="stBaseButton-secondaryFormSubmit"] * {{
++        color: inherit !important;
++    }}
++
++    /* Robust overrides for inputs and select components under different states */
++    div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {{
++        background-color: {card_bg} !important;
++        color: {text_color} !important;
++        border: 1px solid {card_border} !important;
++    }}
++    div[data-baseweb="select"] > div {{
++        background-color: {card_bg} !important;
++        color: {text_color} !important;
++        border: 1px solid {card_border} !important;
++    }}
++</style>
++""", unsafe_allow_html=True)
++
++# Database Helper Functions
++def get_db_connection():
++    db_path = '/Users/shanfu/cc/Projects/movie-database-revival/movies.db'
++    conn = sqlite3.connect(db_path)
++    conn.row_factory = sqlite3.Row
++    return conn
++
++def load_genres():
++    conn = get_db_connection()
++    cur = conn.cursor()
++    cur.execute("SELECT DISTINCT genres FROM movies WHERE genres IS NOT NULL AND genres != ''")
++    rows = cur.fetchall()
++    conn.close()
++    
++    genres_set = set()
++    for row in rows:
++        parts = [g.strip() for g in row['genres'].split(',')]
++        genres_set.update(parts)
++    return sorted(list(genres_set))
++
++def search_movies(query, genre_filter, status_filter, path_filter):
++    conn = get_db_connection()
++    cur = conn.cursor()
++    
++    sql = "SELECT id, title, year, watch_status, genres, imdb_rating, douban_rating FROM movies WHERE 1=1"
++    params = []
++    
++    if query:
++        sql += " AND (title LIKE ? OR original_title LIKE ? OR director LIKE ? OR actors LIKE ?)"
++        query_param = f"%{query}%"
++        params.extend([query_param, query_param, query_param, query_param])
++        
++    if genre_filter and genre_filter not in ["All", "全部"]:
++        sql += " AND genres LIKE ?"
++        params.append(f"%{genre_filter}%")
++        
++    if status_filter != "All":
++        sql += " AND watch_status = ?"
++        params.append("Seen" if status_filter == "Seen" else "Unseen")
++        
++    if path_filter == "With File Path":
++        sql += " AND physical_path IS NOT NULL AND physical_path != ''"
++    elif path_filter == "Without File Path":
++        sql += " AND (physical_path IS NULL OR physical_path = '')"
++        
++    sql += " ORDER BY id DESC"
++    
++    cur.execute(sql, params)
++    rows = cur.fetchall()
++    conn.close()
++    return rows
++
++def get_movie_details(movie_id):
++    conn = get_db_connection()
++    cur = conn.cursor()
++    cur.execute("SELECT * FROM movies WHERE id = ?", (movie_id,))
++    row = cur.fetchone()
++    conn.close()
++    return row
++
++def update_movie_fields(movie_id, fields_dict):
++    conn = get_db_connection()
++    cur = conn.cursor()
++    
++    set_clause = ", ".join([f"{k} = ?" for k in fields_dict.keys()])
++    values = list(fields_dict.values())
++    values.append(movie_id)
++    
++    cur.execute(f"UPDATE movies SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", values)
++    conn.commit()
++    conn.close()
++
++def insert_new_movie(title):
++    conn = get_db_connection()
++    cur = conn.cursor()
++    cur.execute("INSERT INTO movies (title, watch_status) VALUES (?, 'Unseen')", (title,))
++    new_id = cur.lastrowid
++    conn.commit()
++    conn.close()
++    return new_id
++
++# Metadata Fetching (TMDB & WMDB APIs)
++def search_tmdb_movies(title, api_key):
++    if not api_key:
++        return []
++    url = f"https://api.themoviedb.org/3/search/movie"
++    params = {"api_key": api_key, "query": title, "language": st.session_state.get('lang', 'zh')}
++    try:
++        r = requests.get(url, params=params, timeout=10)
++        if r.status_code == 200:
++            return r.json().get('results', [])
++    except Exception as e:
++        st.error(f"TMDB search failed: {e}")
++    return []
++
++def get_tmdb_movie_details(tmdb_id, api_key):
++    if not api_key:
++        return None
++    url = f"https://api.themoviedb.org/3/movie/{tmdb_id}"
++    params = {"api_key": api_key, "language": st.session_state.get('lang', 'zh'), "append_to_response": "credits,external_ids"}
++    try:
++        r = requests.get(url, params=params, timeout=10)
++        if r.status_code == 200:
++            return r.json()
++    except Exception as e:
++        st.error(f"TMDB details fetch failed: {e}")
++    return None
++
++def fetch_wmdb_ratings(title_or_imdb):
++    url = f"https://api.wmdb.tv/api/v1/movie"
++    params = {"search": title_or_imdb} if not str(title_or_imdb).startswith('tt') else {"id": title_or_imdb}
++    try:
++        r = requests.get(url, params=params, timeout=10)
++        if r.status_code == 200:
++            data = r.json()
++            if isinstance(data, list) and len(data) > 0:
++                return data[0]
++    except Exception:
++        pass
++    return None
++
++# Base64 Poster Helper
++def get_cover_base64(movie_id):
++    covers_dir = '/Users/shanfu/cc/Projects/movie-database-revival/covers'
++    cover_file = os.path.join(covers_dir, f"{movie_id}.jpg")
++    if os.path.exists(cover_file) and os.path.getsize(cover_file) > 0:
++        try:
++            with open(cover_file, "rb") as f:
++                return "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("utf-8")
++        except Exception:
++            pass
++    return None
++
++# TMDB Key Load/Save Helpers
++def load_env_var(var_name, default_value=""):
++    env_path = '/Users/shanfu/cc/Projects/movie-database-revival/.env'
++    if os.path.exists(env_path):
++        try:
++            with open(env_path, 'r') as f:
++                for line in f:
++                    if line.startswith(f"{var_name}="):
++                        return line.split('=', 1)[1].strip()
++        except Exception:
++            pass
++    return default_value
++
++def save_env_vars(vars_dict):
++    env_path = '/Users/shanfu/cc/Projects/movie-database-revival/.env'
++    current_vars = {}
++    if os.path.exists(env_path):
++        try:
++            with open(env_path, 'r') as f:
++                for line in f:
++                    if '=' in line:
++                        parts = line.split('=', 1)
++                        if len(parts) == 2:
++                            current_vars[parts[0].strip()] = parts[1].strip()
++        except Exception:
++            pass
++    
++    current_vars.update(vars_dict)
++    
++    try:
++        with open(env_path, 'w') as f:
++            for k, v in current_vars.items():
++                f.write(f"{k}={v}\n")
++        return True
++    except Exception:
++        return False
++
++def load_tmdb_key():
++    if 'tmdb_key' in st.session_state and st.session_state['tmdb_key']:
++        return st.session_state['tmdb_key']
++    if os.environ.get('TMDB_API_KEY'):
++        st.session_state['tmdb_key'] = os.environ.get('TMDB_API_KEY')
++        return os.environ.get('TMDB_API_KEY')
++    key = load_env_var('TMDB_API_KEY', '')
++    if key:
++        st.session_state['tmdb_key'] = key
++    return key
++
++def save_tmdb_key_permanently(key):
++    st.session_state['tmdb_key'] = key
++    return save_env_vars({'TMDB_API_KEY': key})
++
++# Compute Statistics for Header
++conn = get_db_connection()
++cur = conn.cursor()
++cur.execute("SELECT COUNT(*) FROM movies")
++total_count = cur.fetchone()[0]
++cur.execute("SELECT COUNT(*) FROM movies WHERE watch_status = 'Seen'")
++seen_count = cur.fetchone()[0]
++conn.close()
++
++# Check Query Parameters for select trigger
++query_params = st.query_params
++if "movie_id" in query_params:
++    st.session_state.selected_movie_id = int(query_params["movie_id"])
++
++# Read and initialize loaded_count from query parameters or session state
++url_loaded = query_params.get('loaded_count')
++if url_loaded:
++    try:
++        st.session_state.loaded_count = int(url_loaded)
++    except ValueError:
++        pass
++
++if 'loaded_count' not in st.session_state:
++    st.session_state.loaded_count = 36
++
++# Sticky Top Header and Search/Filters Bar Container
++with st.container():
++    st.markdown('<div class="sticky-header-marker"></div>', unsafe_allow_html=True)
++    
++    # Horizontally Aligned Header containing icon, title, mode toggle, language select, add movie, and settings/stats
++    col_logo, col_ctrls = st.columns([2.5, 3.5])
++    with col_logo:
++        st.markdown(
++            f'<div style="display: flex; align-items: center; gap: 0.75rem; padding-top: 0.3rem;">'
++            f'  <svg class="app-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="36" height="36" style="vertical-align: middle;">'
++            f'    <defs>'
++            f'      <linearGradient id="glowGrad" x1="0%" y1="0%" x2="100%" y2="100%">'
++            f'        <stop offset="0%" stop-color="#38BDF8" />'
++            f'        <stop offset="100%" stop-color="#818CF8" />'
++            f'      </linearGradient>'
++            f'      <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">'
++            f'        <feGaussianBlur stdDeviation="2" result="blur" />'
++            f'        <feComposite in="SourceGraphic" in2="blur" operator="over" />'
++            f'      </filter>'
++            f'    </defs>'
++            f'    <rect x="8" y="8" width="84" height="84" rx="22" fill="url(#glowGrad)" opacity="0.12" stroke="url(#glowGrad)" stroke-width="2"/>'
++            f'    <path d="M 28,34 L 72,24 L 70,33 L 26,43 Z" fill="#F8FAFC" filter="url(#neonGlow)" />'
++            f'    <path d="M 33,33 L 37,32 M 43,30 L 47,29 M 53,28 L 57,27 M 63,26 L 67,25" stroke="#0F172A" stroke-width="2.5" stroke-linecap="round" />'
++            f'    <rect x="25" y="44" width="50" height="32" rx="6" fill="#151726" stroke="url(#glowGrad)" stroke-width="2" />'
++            f'    <rect x="32" y="52" width="36" height="3" rx="1.5" fill="#818CF8" opacity="0.5" />'
++            f'    <rect x="32" y="60" width="22" height="3" rx="1.5" fill="#38BDF8" opacity="0.5" />'
++            f'    <polygon points="48,51 58,56 48,61" fill="#38BDF8" />'
++            f'  </svg>'
++            f'  <span style="color: {header_title_color}; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.04em; line-height: 1;">Movie Label <span class="title-highlight">Revived</span></span>'
++            f'</div>',
++            unsafe_allow_html=True
++        )
++        
++    with col_ctrls:
++        # Mini controls columns: theme, lang, add, settings
++        sub_c1, sub_c2, sub_c3, sub_c4 = st.columns([0.8, 1.2, 1.8, 2.2])
++        
++        with sub_c1:
++            theme_val = st.toggle("🌙", value=(st.session_state.theme == 'dark'), label_visibility="collapsed")
++            new_theme = 'dark' if theme_val else 'light'
++            if new_theme != st.session_state.theme:
++                st.session_state.theme = new_theme
++                st.rerun()
++                
++        with sub_c2:
++            lang_options = ["简体中文", "English"]
++            selected_lang = st.selectbox("🌐", lang_options, index=0 if st.session_state.lang == 'zh' else 1, label_visibility="collapsed")
++            new_lang = 'zh' if selected_lang == "简体中文" else 'en'
++            if new_lang != st.session_state.lang:
++                st.session_state.lang = new_lang
++                st.query_params["lang"] = new_lang
++                save_env_vars({'UI_LANG': new_lang})
++                st.rerun()
++                
++        with sub_c3:
++            with st.popover("➕ " + t("add_entry_title"), use_container_width=True):
++                st.markdown(f"<h3 style='color:{text_color};margin-top:0;'>{t('add_entry_title')}</h3>", unsafe_allow_html=True)
++                new_title = st.text_input("Add movie:", label_visibility="collapsed", placeholder=t("add_entry_placeholder"), key="header_new_title")
++                if st.button(t("create_entry_btn"), use_container_width=True, key="header_create_btn") and new_title.strip():
++                    new_id = insert_new_movie(new_title.strip())
++                    st.success(t("create_entry_success", id=new_id))
++                    st.session_state.selected_movie_id = new_id
++                    st.query_params["movie_id"] = str(new_id)
++                    st.query_params["lang"] = st.session_state.lang
++                    st.rerun()
++                    
++        with sub_c4:
++            with st.popover(t("settings_stats"), use_container_width=True):
++                st.markdown(f"<h3 style='color:{text_color};margin-top:0;'>{t('settings_stats')}</h3>", unsafe_allow_html=True)
++                
++                # Stats Metrics Grid inside Popover
++                m_col1, m_col2 = st.columns(2)
++                with m_col1:
++                    st.metric(t("total_movies"), f"{total_count}")
++                with m_col2:
++                    st.metric(t("watched"), f"{seen_count}", f"{int(seen_count/total_count*100) if total_count > 0 else 0}%")
++                    
++                st.markdown("---")
++                
++                # TMDB API Key config
++                st.markdown(f"**{t('tmdb_key_label')}**")
++                loaded_key = load_tmdb_key()
++                tmdb_key = st.text_input(t("tmdb_key_label"), type="password", 
++                                         value=loaded_key,
++                                         help=t("tmdb_key_help"),
++                                         key="header_tmdb_key",
++                                         label_visibility="collapsed")
++                
++                if tmdb_key != loaded_key:
++                    if st.button(t("save_key_btn"), use_container_width=True, key="header_save_key_btn"):
++                        if save_tmdb_key_permanently(tmdb_key):
++                            st.success(t("save_key_success"))
++                            st.rerun()
++                            
++                st.markdown("---")
++                
++                # Batch Autocomplete in settings popover
++                st.markdown(f"**{t('batch_title')}**")
++                
++                # Check incomplete count
++                conn = get_db_connection()
++                cur = conn.cursor()
++                cur.execute("SELECT COUNT(*) FROM movies WHERE plot IS NULL OR plot = '' OR genres IS NULL OR genres = ''")
++                incomplete_count = cur.fetchone()[0]
++                conn.close()
++                
++                st.write(t("batch_warning", count=incomplete_count))
++                
++                if incomplete_count > 0:
++                    batch_limit = st.slider(t("batch_limit_label"), min_value=10, max_value=200, value=50, step=10, key="header_batch_limit")
++                    
++                    # Key check
++                    key = load_tmdb_key()
++                    if not key:
++                        st.warning(t("batch_key_warning"))
++                    else:
++                        if st.button(t("batch_start_btn"), use_container_width=True, key="header_batch_start_btn"):
++                            # Fetch target movies
++                            conn = get_db_connection()
++                            cur = conn.cursor()
++                            cur.execute("""
++                                SELECT id, title 
++                                FROM movies 
++                                WHERE plot IS NULL OR plot = '' OR genres IS NULL OR genres = '' 
++                                LIMIT ?
++                            """, (batch_limit,))
++                            incomplete_movies = cur.fetchall()
++                            conn.close()
++                            
++                            if not incomplete_movies:
++                                st.info(t("batch_empty"))
++                            else:
++                                progress_bar = st.progress(0.0)
++                                status_text = st.empty()
++                                
++                                success_count = 0
++                                skip_count = 0
++                                
++                                covers_dir = '/Users/shanfu/cc/Projects/movie-database-revival/covers'
++                                
++                                with st.status(t("batch_status_label"), expanded=True) as status_box:
++                                    for idx, m in enumerate(incomplete_movies):
++                                        m_id = m['id']
++                                        m_title = m['title']
++                                        
++                                        # Update status
++                                        status_text.text(t("batch_status_processing", current=(idx+1), total=len(incomplete_movies), title=m_title))
++                                        progress_bar.progress((idx + 1) / len(incomplete_movies))
++                                        
++                                        # Search TMDB
++                                        results = search_tmdb_movies(m_title, key)
++                                        if not results:
++                                            st.write(f"❌ {m_title}")
++                                            skip_count += 1
++                                            continue
++                                            
++                                        # Take first match
++                                        r = results[0]
++                                        details = get_tmdb_movie_details(r.get('id'), key)
++                                        if not details:
++                                            st.write(f"❌ {m_title}")
++                                            skip_count += 1
++                                            continue
++                                            
++                                        # Parse Details
++                                        tmdb_id_str = str(r.get('id'))
++                                        original_title = details.get('original_title')
++                                        runtime = details.get('runtime')
++                                        release_date = details.get('release_date')
++                                        year = int(release_date.split('-')[0]) if release_date else None
++                                        
++                                        genre_names = [g.get('name') for g in details.get('genres', [])]
++                                        genres = ", ".join(genre_names) if genre_names else None
++                                        
++                                        director_names = [c.get('name') for c in details.get('credits', {}).get('crew', []) if c.get('job') == 'Director']
++                                        director = ", ".join(director_names) if director_names else None
++                                        
++                                        cast_names = [c.get('name') for c in details.get('credits', {}).get('cast', [])][:15]
++                                        actors = ", ".join(cast_names) if cast_names else None
++                                        
++                                        plot = details.get('overview')
++                                        countries = [c.get('name') for c in details.get('production_countries', [])]
++                                        country = ", ".join(countries) if countries else None
++                                        
++                                        external_ids = details.get('external_ids', {})
++                                        imdb_id = external_ids.get('imdb_id')
++                                        
++                                        # Fetch Douban
++                                        wmdb_data = fetch_wmdb_ratings(imdb_id if imdb_id else m_title)
++                                        douban_id = None
++                                        douban_rating = None
++                                        imdb_rating = details.get('vote_average')
++                                        
++                                        if wmdb_data:
++                                            douban_id = wmdb_data.get('doubanId')
++                                            douban_rating = wmdb_data.get('doubanRating')
++                                            if wmdb_data.get('imdbRating'):
++                                                imdb_rating = wmdb_data.get('imdbRating')
++                                                
++                                        # Save poster
++                                        poster_path = r.get('poster_path')
++                                        if poster_path:
++                                            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
++                                            try:
++                                                img_r = requests.get(poster_url, timeout=5)
++                                                if img_r.status_code == 200:
++                                                    with open(os.path.join(covers_dir, f"{m_id}.jpg"), 'wb') as img_f:
++                                                        img_f.write(img_r.content)
++                                            except Exception:
++                                                pass
++                                                
++                                        # Update SQLite
++                                        update_movie_fields(m_id, {
++                                            'original_title': original_title,
++                                            'director': director,
++                                            'actors': actors,
++                                            'genres': genres,
++                                            'year': year,
++                                            'runtime': runtime,
++                                            'country': country,
++                                            'plot': plot,
++                                            'imdb_id': imdb_id,
++                                            'imdb_rating': imdb_rating,
++                                            'douban_id': douban_id,
++                                            'douban_rating': douban_rating,
++                                            'tmdb_id': tmdb_id_str
++                                        })
++                                        
++                                        st.write(f"✅ {m_title} ({year if year else 'N/A'})")
++                                        success_count += 1
++                                        
++                                        import time
++                                        time.sleep(0.1)
++                                        
++                                    status_box.update(state="complete", label=t("batch_success", success=success_count, skip=skip_count))
++                                
++                                st.success(t("batch_success", success=success_count, skip=skip_count))
++                                st.rerun()
++    
++    # 1. Main Search and Filters Bar
++    col_q, col_g, col_s, col_p = st.columns([4, 2, 2, 2])
++    with col_q:
++        search_query = st.text_input(t("search_label"), placeholder=t("search_placeholder"))
++    with col_g:
++        genres_list = [t("status_all")] + load_genres()
++        genre_filter = st.selectbox(t("filter_genre"), genres_list)
++    with col_s:
++        status_filter_options = [t("status_all"), t("status_seen"), t("status_unseen")]
++        status_selected = st.selectbox(t("filter_status"), status_filter_options)
++        status_filter = "All"
++        if status_selected == t("status_seen"):
++            status_filter = "Seen"
++        elif status_selected == t("status_unseen"):
++            status_filter = "Unseen"
++    with col_p:
++        path_filter_options = [t("path_all"), t("path_with"), t("path_without")]
++        path_selected = st.selectbox(t("filter_path"), path_filter_options)
++        path_filter = "All"
++        if path_selected == t("path_with"):
++            path_filter = "With File Path"
++        elif path_selected == t("path_without"):
++            path_filter = "Without File Path"
++
++# Query execution
++movies_list_raw = search_movies(search_query, genre_filter, status_filter, path_filter)
++
++# Custom sort: Tier 0 (has poster and year), Tier 1 (has poster, no year), Tier 2 (no poster, has year), Tier 3 (neither)
++# Sorted descending by year, then descending by id
++def get_movie_sort_key(m):
++    m_id = m['id']
++    year = m['year'] if m['year'] is not None else 0
++    covers_dir = '/Users/shanfu/cc/Projects/movie-database-revival/covers'
++    has_cover = os.path.exists(os.path.join(covers_dir, f"{m_id}.jpg"))
++    has_year = year > 0
++    
++    if has_cover and has_year:
++        tier = 0
++    elif has_cover and not has_year:
++        tier = 1
++    elif not has_cover and has_year:
++        tier = 2
++    else:
++        tier = 3
++    return (tier, -year, -m_id)
++
++movies_list = sorted(movies_list_raw, key=get_movie_sort_key)
++
++# Track search/filter state to reset loaded_count if they change
++filter_key = f"{search_query}_{genre_filter}_{status_filter}_{path_filter}"
++if 'last_filter_key' not in st.session_state:
++    st.session_state.last_filter_key = filter_key
++elif st.session_state.last_filter_key != filter_key:
++    st.session_state.last_filter_key = filter_key
++    st.session_state.loaded_count = 36
++    st.query_params["loaded_count"] = "36"
++
++# Selection logic initial sync
++if 'selected_movie_id' not in st.session_state and movies_list:
++    st.session_state.selected_movie_id = movies_list[0]['id']
++
++# Split view layout: Left column is the Movie Poster Wall (Grid), Right column is selected Movie Details
++col_wall, col_details = st.columns([3, 2])
++
++# Left Column - Netflix style Poster Wall
++with col_wall:
++    # Slice list using loaded_count for waterfall flow
++    page_movies = movies_list[:st.session_state.loaded_count]
++    
++    # Render the custom poster wall grid inside a native scrollable container using st.columns and overlay buttons
++    with st.container(height=730, border=False):
++        st.markdown('<div class="poster-wall-marker"></div>', unsafe_allow_html=True)
++        
++        # Callback to update selection state prior to rerun
++        def select_movie_cb(movie_id):
++            st.session_state.selected_movie_id = movie_id
++            st.query_params["movie_id"] = str(movie_id)
++            
++        cols_per_row = 4
++        for i in range(0, len(page_movies), cols_per_row):
++            cols = st.columns(cols_per_row)
++            for j in range(cols_per_row):
++                if i + j < len(page_movies):
++                    m = page_movies[i + j]
++                    m_id = m['id']
++                    title = m['title']
++                    year = m['year'] if m['year'] else 'N/A'
++                    rating = f"⭐️ {m['douban_rating']:.1f}" if m['douban_rating'] else (f"⭐️ {m['imdb_rating']:.1f}" if m['imdb_rating'] else "N/A")
++                    
++                    is_selected = (m_id == st.session_state.get('selected_movie_id'))
++                    card_class = "poster-card poster-card-selected" if is_selected else "poster-card"
++                    
++                    cover_b64 = get_cover_base64(m_id)
++                    
++                    # Build card HTML (no <a> tag, just a div!)
++                    card_html = f'<div class="{card_class}">'
++                    card_html += '<div class="poster-img-container">'
++                    if cover_b64:
++                        card_html += f'<img src="{cover_b64}" class="poster-img" alt="{title}" />'
++                    else:
++                        initials = title[:2] if len(title) >= 2 else title
++                        card_html += f'<div class="poster-placeholder">{initials}<div class="poster-placeholder-text">{title}</div></div>'
++                    card_html += '</div>'
++                    card_html += '<div class="poster-info">'
++                    card_html += f'<div class="poster-title" title="{title}">{title}</div>'
++                    card_html += f'<div class="poster-meta"><span>📅 {year}</span><span>{rating}</span></div>'
++                    card_html += '</div>'
++                    card_html += '</div>'
++                    
++                    with cols[j]:
++                        st.markdown(card_html, unsafe_allow_html=True)
++                        if st.button("", key=f"poster_btn_{m_id}", use_container_width=True, on_click=select_movie_cb, args=(m_id,)):
++                            st.rerun()
++                            
++        # Bottom Waterfall (Load More) button inside the scrollable container
++        has_more = len(movies_list) > st.session_state.loaded_count
++        if has_more:
++            if st.button("🔽 " + t("load_more"), use_container_width=True, key="load_more_btn"):
++                st.session_state.loaded_count += 36
++                st.query_params["loaded_count"] = str(st.session_state.loaded_count)
++                st.rerun()
++
++# Right Column - Movie Details & Editor Pane
++movie = None
++if 'selected_movie_id' in st.session_state:
++    movie = get_movie_details(st.session_state.selected_movie_id)
++
++with col_details:
++    if not movie:
++        st.info(t("select_prompt"))
++    else:
++        with st.container(height=820, border=False):
++            st.markdown('<div class="details-panel-marker"></div>', unsafe_allow_html=True)
++        
++            # Load Cover JPG if exists
++            covers_dir = '/Users/shanfu/cc/Projects/movie-database-revival/covers'
++            cover_file = os.path.join(covers_dir, f"{movie['id']}.jpg")
++        
++            # Display Movie details in Split view
++            col_img, col_info = st.columns([1, 1.8])
++        
++            with col_img:
++                st.markdown('<div class="movie-poster-container">', unsafe_allow_html=True)
++                if os.path.exists(cover_file) and os.path.getsize(cover_file) > 0:
++                    try:
++                        img = Image.open(cover_file)
++                        st.image(img, use_container_width=True)
++                    except Exception:
++                        st.markdown('<div class="movie-poster-placeholder">🎥</div>', unsafe_allow_html=True)
++                else:
++                    st.markdown('<div class="movie-poster-placeholder">🎥</div>', unsafe_allow_html=True)
++                st.markdown('</div>', unsafe_allow_html=True)
++            
++                # Watch status badge & ratings
++                status_html = f'<span class="custom-badge badge-status-seen">👁️ {t("status_seen").upper()}</span>' if movie['watch_status'] == 'Seen' else f'<span class="custom-badge badge-status-unseen">👁️ {t("status_unseen").upper()}</span>'
++                imdb_rating_val = f"{movie['imdb_rating']:.1f}" if movie['imdb_rating'] else "N/A"
++                douban_rating_val = f"{movie['douban_rating']:.1f}" if movie['douban_rating'] else "N/A"
++            
++                st.markdown(f"""
++                <div class="badge-container">
++                    {status_html}
++                    <span class="custom-badge badge-imdb">IMDb {imdb_rating_val}</span>
++                    <span class="custom-badge badge-douban">豆瓣 {douban_rating_val}</span>
++                </div>
++                """, unsafe_allow_html=True)
++            
++            with col_info:
++                # Custom styled title & original title
++                st.markdown(f'<h2 class="movie-title-header">{movie["title"]}</h2>', unsafe_allow_html=True)
++                if movie['original_title']:
++                    st.markdown(f'<p class="movie-orig-title">{movie["original_title"]}</p>', unsafe_allow_html=True)
++                else:
++                    st.markdown(f'<p class="movie-orig-title">{t("no_alt_title")}</p>', unsafe_allow_html=True)
++                
++                # Render Meta Badges
++                year_val = movie['year'] if movie['year'] else t("unknown_year")
++                runtime_val = f"{movie['runtime']} Mins" if movie['runtime'] else t("unknown_runtime")
++                country_val = movie['country'] if movie['country'] else t("unknown_country")
++                st.markdown(f"""
++                <div class="badge-container">
++                    <span class="custom-badge badge-year">📅 {year_val}</span>
++                    <span class="custom-badge badge-runtime">⏱️ {runtime_val}</span>
++                    <span class="custom-badge badge-country">🌍 {country_val}</span>
++                </div>
++                """, unsafe_allow_html=True)
++            
++                # Director
++                st.markdown(f'<p class="movie-metadata-label">{t("director_label")}</p>', unsafe_allow_html=True)
++                st.markdown(f'<p class="movie-metadata-value" style="margin-bottom:0.6rem;">{movie["director"] if movie["director"] else t("unknown_director")}</p>', unsafe_allow_html=True)
++            
++                # Genres
++                st.markdown(f'<p class="movie-metadata-label">{t("genres_label")}</p>', unsafe_allow_html=True)
++                st.markdown(f'<p class="movie-metadata-value">{movie["genres"] if movie["genres"] else t("unknown_genres")}</p>', unsafe_allow_html=True)
++            
++            # Full details down
++            st.markdown(f'<p class="movie-metadata-label">{t("plot_label")}</p>', unsafe_allow_html=True)
++            st.markdown(f'<p style="color:#CBD5E1;font-size:0.92rem;line-height:1.5;margin-bottom:1rem;">{movie["plot"] if movie["plot"] else t("plot_missing")}</p>', unsafe_allow_html=True)
++        
++            st.markdown(f'<p class="movie-metadata-label">{t("actors_label")}</p>', unsafe_allow_html=True)
++            st.markdown(f'<p class="movie-metadata-value" style="font-size:0.9rem;margin-bottom:1rem;">{movie["actors"] if movie["actors"] else t("unknown_actors")}</p>', unsafe_allow_html=True)
++        
++            # File paths & location
++            st.markdown(f'<p class="movie-metadata-label">{t("path_label")}</p>', unsafe_allow_html=True)
++            st.code(movie['physical_path'] if movie['physical_path'] else t("path_missing"), language="bash")
++
++            # Tabs for operations
++            st.markdown("<br>", unsafe_allow_html=True)
++            tab_status, tab_auto, tab_manual = st.tabs([t("tab_status"), t("tab_auto"), t("tab_manual")])
++        
++            with tab_status:
++                st.subheader(t("manage_status_title"))
++            
++                col_seen, col_p_edit = st.columns([1, 2])
++                with col_seen:
++                    is_seen = st.checkbox(t("mark_seen_checkbox"), value=(movie['watch_status'] == 'Seen'))
++                with col_p_edit:
++                    new_path = st.text_input(t("path_input_label"), value=(movie['physical_path'] if movie['physical_path'] else ""))
++                
++                if st.button(t("save_status_btn"), use_container_width=True):
++                    updated_status = 'Seen' if is_seen else 'Unseen'
++                    update_movie_fields(movie['id'], {
++                        'watch_status': updated_status,
++                        'physical_path': new_path
++                    })
++                    st.success(t("save_status_success"))
++                    st.rerun()
++                
++            with tab_auto:
++                st.subheader(t("auto_complete_title"))
++            
++                # Quick TMDB Query
++                search_term = st.text_input(t("search_keywords_label"), value=movie['title'])
++            
++                if st.button(t("search_tmdb_btn"), use_container_width=True):
++                    if not tmdb_key:
++                        st.warning(t("no_key_warning"))
++                    else:
++                        results = search_tmdb_movies(search_term, tmdb_key)
++                        if not results:
++                            st.info(t("no_results_info"))
++                        else:
++                            st.session_state.search_results = results
++            
++                # Display results
++                if 'search_results' in st.session_state:
++                    st.write(t("matching_results"))
++                    for r in st.session_state.search_results[:5]:
++                        col_r_info, col_r_btn = st.columns([4, 1.2])
++                        with col_r_info:
++                            st.write(f"**{r.get('title')}** ({r.get('release_date', 'N/A').split('-')[0]}) - *{r.get('original_title')}*")
++                            st.caption(f"{t('plot_outline_label')}{r.get('overview')[:100]}...")
++                        with col_r_btn:
++                            if st.button(t("match_this_btn"), key=f"match_{r.get('id')}", use_container_width=True):
++                                details = get_tmdb_movie_details(r.get('id'), tmdb_key)
++                            
++                                if details:
++                                    tmdb_id_str = str(r.get('id'))
++                                    original_title = details.get('original_title')
++                                    runtime = details.get('runtime')
++                                    release_date = details.get('release_date')
++                                    year = int(release_date.split('-')[0]) if release_date else None
++                                
++                                    genre_names = [g.get('name') for g in details.get('genres', [])]
++                                    genres = ", ".join(genre_names)
++                                
++                                    director_names = [c.get('name') for c in details.get('credits', {}).get('crew', []) if c.get('job') == 'Director']
++                                    director = ", ".join(director_names) if director_names else ""
++                                
++                                    cast_names = [c.get('name') for c in details.get('credits', {}).get('cast', [])][:15]
++                                    actors = ", ".join(cast_names) if cast_names else ""
++                                
++                                    plot = details.get('overview')
++                                    countries = [c.get('name') for c in details.get('production_countries', [])]
++                                    country = ", ".join(countries) if countries else ""
++                                
++                                    external_ids = details.get('external_ids', {})
++                                    imdb_id = external_ids.get('imdb_id')
++                                
++                                    # Fetch Douban
++                                    wmdb_data = fetch_wmdb_ratings(imdb_id if imdb_id else movie['title'])
++                                    douban_id = None
++                                    douban_rating = None
++                                    imdb_rating = details.get('vote_average')
++                                
++                                    if wmdb_data:
++                                        douban_id = wmdb_data.get('doubanId')
++                                        douban_rating = wmdb_data.get('doubanRating')
++                                        if wmdb_data.get('imdbRating'):
++                                            imdb_rating = wmdb_data.get('imdbRating')
++                                
++                                    # Update SQLite DB
++                                    update_fields = {
++                                        'original_title': original_title,
++                                        'director': director,
++                                        'actors': actors,
++                                        'genres': genres,
++                                        'year': year,
++                                        'runtime': runtime,
++                                        'country': country,
++                                        'plot': plot,
++                                        'imdb_id': imdb_id,
++                                        'imdb_rating': imdb_rating,
++                                        'douban_id': douban_id,
++                                        'douban_rating': douban_rating,
++                                        'tmdb_id': tmdb_id_str
++                                    }
++                                
++                                    # Save poster
++                                    poster_path = r.get('poster_path')
++                                    if poster_path:
++                                        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
++                                        try:
++                                            img_r = requests.get(poster_url, timeout=10)
++                                            if img_r.status_code == 200:
++                                                with open(os.path.join(covers_dir, f"{movie['id']}.jpg"), 'wb') as img_f:
++                                                    img_f.write(img_r.content)
++                                        except Exception:
++                                            pass
++                                        
++                                    update_movie_fields(movie['id'], update_fields)
++                                    st.success(t("match_success"))
++                                    del st.session_state.search_results
++                                    st.rerun()
++                                
++            with tab_manual:
++                st.subheader(t("manual_edit_title"))
++            
++                with st.form("manual_edit_form"):
++                    e_title = st.text_input(t("form_title"), value=movie['title'])
++                    e_orig_title = st.text_input(t("form_orig_title"), value=(movie['original_title'] if movie['original_title'] else ""))
++                
++                    col_y, col_r = st.columns(2)
++                    with col_y:
++                        e_year = st.number_input(t("form_year"), value=int(movie['year']) if movie['year'] else 0, step=1)
++                    with col_r:
++                        e_runtime = st.number_input(t("form_runtime"), value=int(movie['runtime']) if movie['runtime'] else 0, step=1)
++                    
++                    e_genres = st.text_input(t("form_genres"), value=(movie['genres'] if movie['genres'] else ""))
++                    e_director = st.text_input(t("form_director"), value=(movie['director'] if movie['director'] else ""))
++                    e_actors = st.text_area(t("form_actors"), value=(movie['actors'] if movie['actors'] else ""))
++                    e_plot = st.text_area(t("form_plot"), value=(movie['plot'] if movie['plot'] else ""))
++                
++                    col_id1, col_id2 = st.columns(2)
++                    with col_id1:
++                        e_imdb_id = st.text_input(t("form_imdb_id"), value=(movie['imdb_id'] if movie['imdb_id'] else ""))
++                        e_imdb_rating = st.number_input(t("form_imdb_rating"), value=float(movie['imdb_rating']) if movie['imdb_rating'] else 0.0, step=0.1)
++                    with col_id2:
++                        e_douban_id = st.text_input(t("form_douban_id"), value=(movie['douban_id'] if movie['douban_id'] else ""))
++                        e_douban_rating = st.number_input(t("form_douban_rating"), value=float(movie['douban_rating']) if movie['douban_rating'] else 0.0, step=0.1)
++                    
++                    e_country = st.text_input(t("form_country"), value=(movie['country'] if movie['country'] else ""))
++                    e_tmdb_id = st.text_input(t("form_tmdb_id"), value=(movie['tmdb_id'] if movie['tmdb_id'] else ""))
++                
++                    submit_edit = st.form_submit_button(t("form_submit"), use_container_width=True)
++                    if submit_edit:
++                        update_fields = {
++                            'title': e_title,
++                            'original_title': e_orig_title if e_orig_title else None,
++                            'year': e_year if e_year > 0 else None,
++                            'runtime': e_runtime if e_runtime > 0 else None,
++                            'genres': e_genres if e_genres else None,
++                            'director': e_director if e_director else None,
++                            'actors': e_actors if e_actors else None,
++                            'plot': e_plot if e_plot else None,
++                            'imdb_id': e_imdb_id if e_imdb_id else None,
++                            'imdb_rating': e_imdb_rating if e_imdb_rating > 0 else None,
++                            'douban_id': e_douban_id if e_douban_id else None,
++                            'douban_rating': e_douban_rating if e_douban_rating > 0 else None,
++                            'country': e_country if e_country else None,
++                            'tmdb_id': e_tmdb_id if e_tmdb_id else None
++                        }
++                        update_movie_fields(movie['id'], update_fields)
++                        st.success(t("form_success"))
++                        st.rerun()
++                    
++
