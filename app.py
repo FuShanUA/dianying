@@ -455,7 +455,7 @@ I18N = {
         "search_placeholder": "🔍 搜索电影 (支持中文名、英文名)",
         "filter_genre": "🎭 类型",
         "filter_status": "👁️ 观看状态",
-        "filter_country": "🌍 国家地区",
+        "filter_country": "🌍 国家/地区",
         "filter_language": "🗣️ 语言",
         "filter_year": "📅 年份",
         "filter_imdb": "⭐ IMDb 评分范围",
@@ -505,7 +505,7 @@ I18N = {
         "form_imdb_rating": "IMDb 评分:",
         "form_douban_id": "豆瓣 ID:",
         "form_douban_rating": "豆瓣 评分:",
-        "form_country": "制片国家:",
+        "form_country": "国家/地区:",
         "form_tmdb_id": "TMDB ID:",
         "form_submit": "保存手动微调内容",
         "form_success": "电影基本字段保存成功！",
@@ -674,7 +674,7 @@ I18N = {
         "search_placeholder": "🔍 Search Movies (by Chinese or English title)",
         "filter_genre": "🎭 Genre",
         "filter_status": "👁️ Watch Status",
-        "filter_country": "🌍 Country",
+        "filter_country": "🌍 Country/Region",
         "filter_language": "🗣️ Language",
         "filter_year": "📅 Year",
         "filter_imdb": "⭐ IMDb Rating",
@@ -724,7 +724,7 @@ I18N = {
         "form_imdb_rating": "IMDb Rating:",
         "form_douban_id": "Douban ID:",
         "form_douban_rating": "Douban Rating:",
-        "form_country": "Country:",
+        "form_country": "Country/Region:",
         "form_tmdb_id": "TMDB ID:",
         "form_submit": "Save Manual Corrections",
         "form_success": "Successfully updated movie details!",
@@ -2077,7 +2077,7 @@ def get_cover_base64(movie_id):
     return None
 
 # Google Drive poster upload helper
-def upload_poster_to_gdrive(movie_id, local_cover_path):
+def upload_poster_to_gdrive(movie_id, local_cover_path, force_update=False):
     """Upload a newly-downloaded poster to Google Drive and record the file_id
     in covers_gdrive.json.  Runs synchronously but silently on failure."""
     try:
@@ -2124,6 +2124,11 @@ def upload_poster_to_gdrive(movie_id, local_cover_path):
         existing = service.files().list(q=q, spaces='drive', fields='files(id)').execute().get('files', [])
         if existing:
             file_id = existing[0]['id']
+            if force_update:
+                media = MediaFileUpload(local_cover_path, mimetype='image/jpeg', resumable=True)
+                service.files().update(
+                    fileId=file_id, media_body=media
+                ).execute()
         else:
             file_metadata = {'name': filename, 'parents': [folder_id]}
             media = MediaFileUpload(local_cover_path, mimetype='image/jpeg', resumable=True)
@@ -2716,7 +2721,6 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
     # Supplementary fields check
     missing_extra = (
         not m_dict.get("imdb_id")
-        or not m_dict.get("douban_rating") or float(m_dict.get("douban_rating") or 0.0) == 0.0
         or not m_dict.get("plot")
         or not m_dict.get("plot_zh")
     )
@@ -2821,6 +2825,9 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             plot_zh = (details_zh or details).get('overview')
             countries = [c.get('name') for c in details.get('production_countries', [])]
             country = ", ".join(countries) if countries else ""
+            if country:
+                country = re.sub(r'(?<!中国)台湾', '中国台湾', country)
+                country = re.sub(r'(?<!China )Taiwan', 'China Taiwan Province', country)
 
             external_ids = details.get('external_ids', {})
             imdb_id = external_ids.get('imdb_id')
@@ -2837,10 +2844,11 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                     imdb_rating = wmdb_data.get('imdbRating')
 
             # Poster download & upload
-            poster_path = details.get('poster_path')
+            poster_path = (details_zh or {}).get('poster_path') or (details_en or {}).get('poster_path') or details.get('poster_path')
             local_cover = os.path.join(covers_dir_local, f"{m_id}.jpg")
             if poster_path:
-                if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
+                poster_downloaded = False
+                if force or not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
                     poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
                     try:
                         import requests
@@ -2848,16 +2856,19 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                         if img_r.status_code == 200:
                             with open(local_cover, 'wb') as img_f:
                                 img_f.write(img_r.content)
+                            poster_downloaded = True
                     except Exception:
                         pass
                 
                 # Always ensure it is uploaded to GDrive if the local cover exists
                 if os.path.exists(local_cover) and os.path.getsize(local_cover) > 0:
-                    upload_poster_to_gdrive(m_id, local_cover)
+                    upload_poster_to_gdrive(m_id, local_cover, force_update=poster_downloaded)
 
             # Helper to update fields if missing
             def use_new_if_empty(k, new_val):
                 val = m_dict.get(k)
+                if force:
+                    return new_val if new_val else val
                 return val if val else new_val
 
             update_movie_fields(m_id, {
@@ -2891,6 +2902,8 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             
             def use_new_if_empty(k, new_val):
                 val = m_dict.get(k)
+                if force:
+                    return new_val if new_val else val
                 return val if val else new_val
                 
             update_movie_fields(m_id, {
@@ -2901,17 +2914,19 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             })
             
             local_cover = os.path.join(covers_dir_local, f"{m_id}.jpg")
+            poster_downloaded = False
             if cover_url:
-                if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
+                if force or not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
                     try:
                         img_r = requests.get(cover_url, timeout=10)
                         if img_r.status_code == 200:
                             with open(local_cover, 'wb') as img_f:
                                 img_f.write(img_r.content)
+                            poster_downloaded = True
                     except Exception:
                         pass
             if os.path.exists(local_cover) and os.path.getsize(local_cover) > 0:
-                upload_poster_to_gdrive(m_id, local_cover)
+                upload_poster_to_gdrive(m_id, local_cover, force_update=poster_downloaded)
             return True
     except Exception:
         pass
@@ -3785,6 +3800,9 @@ def batch_metadata_dialog(covers_dir):
                 plot_zh = (details_zh or details).get('overview')
                 countries = [c.get('name') for c in details.get('production_countries', [])]
                 country = ", ".join(countries) if countries else ""
+                if country:
+                    country = re.sub(r'(?<!中国)台湾', '中国台湾', country)
+                    country = re.sub(r'(?<!China )Taiwan', 'China Taiwan Province', country)
                 orig_lang = details.get('original_language', '')
                 
                 spoken = details.get('spoken_languages', [])
@@ -4007,14 +4025,17 @@ def batch_metadata_dialog(covers_dir):
         """)
         basic_count = cur.fetchone()[0]
         
-        # Count supplementary info missing
-        cur.execute("""
-            SELECT COUNT(*) FROM movies
-            WHERE plot IS NULL OR plot = ''
-               OR title_zh IS NULL OR title_zh = ''
-               OR douban_rating IS NULL OR douban_rating = 0
-        """)
-        extra_count = cur.fetchone()[0]
+        # Count supplementary info missing individually
+        cur.execute("SELECT COUNT(*) FROM movies WHERE title_zh IS NULL OR title_zh = ''")
+        cnt_title_zh = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM movies WHERE plot IS NULL OR plot = ''")
+        cnt_plot = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM movies WHERE plot_zh IS NULL OR plot_zh = ''")
+        cnt_plot_zh = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM movies WHERE director_zh IS NULL OR director_zh = ''")
+        cnt_dir_zh = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM movies WHERE actors_zh IS NULL OR actors_zh = ''")
+        cnt_act_zh = cur.fetchone()[0]
         conn.close()
         
         key = load_tmdb_key()
@@ -4070,17 +4091,38 @@ def batch_metadata_dialog(covers_dir):
         
         with tab_extra:
             st.caption(t("batch_mode_extra_help"))
+            
+            st.markdown("##### " + ("选择需要补全的项：" if st.session_state.lang == 'zh' else "Select fields to fill:"))
+            fill_title_zh = st.checkbox(f"🎬 中文片名 (缺少 {cnt_title_zh} 条)" if st.session_state.lang == 'zh' else f"🎬 Chinese Title (missing {cnt_title_zh})", value=(cnt_title_zh > 0))
+            fill_plot_zh = st.checkbox(f"📝 中文简介 (缺少 {cnt_plot_zh} 条)" if st.session_state.lang == 'zh' else f"📝 Chinese Plot (missing {cnt_plot_zh})", value=(cnt_plot_zh > 0))
+            fill_plot = st.checkbox(f"📄 英文简介 (缺少 {cnt_plot} 条)" if st.session_state.lang == 'zh' else f"📄 English Plot (missing {cnt_plot})", value=(cnt_plot > 0))
+            fill_dir_zh = st.checkbox(f"🎥 中文导演名 (缺少 {cnt_dir_zh} 条)" if st.session_state.lang == 'zh' else f"🎥 Chinese Director (missing {cnt_dir_zh})", value=(cnt_dir_zh > 0))
+            fill_act_zh = st.checkbox(f"🎭 中文演员名 (缺少 {cnt_act_zh} 条)" if st.session_state.lang == 'zh' else f"🎭 Chinese Actors (missing {cnt_act_zh})", value=(cnt_act_zh > 0))
+            
+            conditions = []
+            if fill_plot: conditions.append("(plot IS NULL OR plot = '')")
+            if fill_plot_zh: conditions.append("(plot_zh IS NULL OR plot_zh = '')")
+            if fill_title_zh: conditions.append("(title_zh IS NULL OR title_zh = '')")
+            if fill_dir_zh: conditions.append("(director_zh IS NULL OR director_zh = '')")
+            if fill_act_zh: conditions.append("(actors_zh IS NULL OR actors_zh = '')")
+            
+            where_clause = " OR ".join(conditions) if conditions else "1=0"
+            
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(f"SELECT COUNT(*) FROM movies WHERE {where_clause}")
+            extra_count = cur.fetchone()[0]
+            conn.close()
+            
             st.markdown(f"**{extra_count}** 部 {t('batch_mode_extra_count')}" if st.session_state.lang == 'zh' else f"**{extra_count}** movies {t('batch_mode_extra_count')}")
             ec1, ec2 = st.columns(2)
             with ec1:
                 if st.button(t("batch_start_btn"), use_container_width=True, key="batch_start_extra", disabled=extra_count == 0):
                     conn = get_db_connection()
                     cur = conn.cursor()
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT id, title, year FROM movies
-                        WHERE plot IS NULL OR plot = ''
-                           OR title_zh IS NULL OR title_zh = ''
-                           OR douban_rating IS NULL OR douban_rating = 0
+                        WHERE {where_clause}
                         LIMIT ?
                     """, (batch_limit,))
                     targets = cur.fetchall()
@@ -4148,7 +4190,14 @@ def render_settings_popover(total_count, seen_count, text_color, sub_text_color,
         # TMDB API Key config
         st.markdown(f"**{t('tmdb_key_label')}**")
         loaded_key = load_tmdb_key()
-        tmdb_key = st.text_input(t("tmdb_key_label"), type="password", 
+        st.markdown("""
+        <style>
+        input[aria-label="TMDB API 密钥"], input[aria-label="TMDB API Key"] {
+            -webkit-text-security: disc;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        tmdb_key = st.text_input(t("tmdb_key_label"),
                                  value=loaded_key,
                                  help=t("tmdb_key_help"),
                                  key="header_tmdb_key",
@@ -4295,6 +4344,9 @@ def render_manual_edit_form(movie=None):
         e_douban_rating = st.number_input(t("form_douban_rating"), value=float(movie['douban_rating']) if movie['douban_rating'] else 0.0, step=0.1)
     
     e_country = st.text_input(t("form_country"), value=(movie['country'] if movie['country'] else ""))
+    if e_country:
+        e_country = re.sub(r'(?<!中国)台湾', '中国台湾', e_country)
+        e_country = re.sub(r'(?<!China )Taiwan', 'China Taiwan Province', e_country)
     e_tmdb_id = st.text_input(t("form_tmdb_id"), value=(movie['tmdb_id'] if movie['tmdb_id'] else ""))
     
     # Path mapping rules for live validation
@@ -4716,7 +4768,7 @@ lang_suffix = f"_{st.session_state.lang}"
 # Explicit state init (done early so we can query database early)
 for k in ["filter_search_input", f"filter_genre_sel{lang_suffix}", f"filter_status_sel{lang_suffix}", f"filter_country_sel{lang_suffix}", f"filter_lang_sel{lang_suffix}", f"filter_year_sel{lang_suffix}", f"filter_sort_sel{lang_suffix}"]:
     if k not in st.session_state:
-        st.session_state[k] = "" if k == "filter_search_input" else "All" if "sort" not in k else "Year"
+        st.session_state[k] = "" if k == "filter_search_input" else "All" if "sort" not in k else "Added"
         
 imdb_key = f"filter_imdb_slider{lang_suffix}"
 if imdb_key not in st.session_state:
@@ -5584,6 +5636,10 @@ with col_wall:
             st.session_state.show_batch_dialog = False
             if "auto_match_result" in st.session_state:
                 del st.session_state.auto_match_result
+                
+        def toggle_watch_cb(movie_id, current_status):
+            new_status = 'Seen' if current_status == 'Unseen' else 'Unseen'
+            update_movie_fields(movie_id, {'watch_status': new_status})
             
         cols_per_row = st.session_state.get("poster_cols_per_row", 6)
         for i in range(0, len(page_movies), cols_per_row):
@@ -5631,10 +5687,15 @@ with col_wall:
                         st.markdown(f"""
                         <div id="btn_marker_{m_id}" style="display:none;"></div>
                         <style>
+                        div.element-container:has(#btn_marker_{m_id}) {{
+                            display: none;
+                        }}
                         div.element-container:has(#btn_marker_{m_id}) + div.element-container {{
-                            margin-top: -150% !important;
+                            margin-top: calc(-150% - 68px) !important;
                             width: 100% !important;
                             aspect-ratio: 2/3 !important;
+                            padding-bottom: 68px !important;
+                            box-sizing: content-box !important;
                             position: relative !important;
                             z-index: 10 !important;
                             opacity: 0 !important;
@@ -5652,6 +5713,43 @@ with col_wall:
                         
                         # Render a fully transparent button that covers the entire card
                         st.button(" ", key=f"poster_btn_{m_id}", on_click=select_movie_cb, args=(m_id,), use_container_width=True)
+                        
+                        st.markdown(f"""
+                        <div id="badge_marker_{m_id}" style="display:none;"></div>
+                        <style>
+                        div.element-container:has(#badge_marker_{m_id}) {{
+                            display: none;
+                        }}
+                        div.element-container:has(#badge_marker_{m_id}) + div.element-container {{
+                            margin-top: calc(-150% - 68px) !important;
+                            width: 100% !important;
+                            aspect-ratio: 2/3 !important;
+                            padding-bottom: 68px !important;
+                            box-sizing: content-box !important;
+                            position: relative !important;
+                            z-index: 20 !important;
+                            pointer-events: none !important;
+                        }}
+                        div.element-container:has(#badge_marker_{m_id}) + div.element-container div.stButton {{
+                            height: 100% !important;
+                            width: 100% !important;
+                            pointer-events: none !important;
+                        }}
+                        div.element-container:has(#badge_marker_{m_id}) + div.element-container button {{
+                            position: absolute !important;
+                            top: 8px !important;
+                            right: 8px !important;
+                            width: 55px !important;
+                            height: 26px !important;
+                            cursor: pointer !important;
+                            pointer-events: auto !important;
+                            opacity: 0 !important;
+                        }}
+                        </style>
+                        """, unsafe_allow_html=True)
+                        
+                        # Render a transparent button strictly over the top-right badge to toggle watch status
+                        st.button(" ", key=f"badge_btn_{m_id}", on_click=toggle_watch_cb, args=(m_id, m['watch_status']))
                             
         # Bottom Waterfall (Load More) button inside the scrollable container
         has_more = len(movies_list) > st.session_state.loaded_count
