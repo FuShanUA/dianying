@@ -33,6 +33,56 @@ from PIL import Image
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 covers_dir = os.path.join(APP_DIR, 'covers')
 
+# --- Robust HTTP session with retry + connection pooling ---
+# TMDB API calls can intermittently time out with ReadTimeoutError / HTTPSConnectionPool
+# errors.  A shared Session with urllib3 Retry gives us automatic backoff retries so a
+# single transient network hiccup no longer kills metadata auto-complete for a movie.
+import logging
+
+try:
+    from urllib3.util.retry import Retry
+    from requests.adapters import HTTPAdapter
+except Exception:
+    Retry = None
+    HTTPAdapter = None
+
+_http_session = requests.Session()
+if Retry and HTTPAdapter:
+    _retry_strategy = Retry(
+        total=2,
+        connect=0,   # no retry on connect timeout — fallback handles it
+        read=0,      # no retry on read timeout — fallback handles it
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    _adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=1, pool_maxsize=4)
+    _http_session.mount("https://", _adapter)
+    _http_session.mount("http://", _adapter)
+
+def _http_get(url, **kwargs):
+    """Wrapper around requests.get using the retry-enabled session with a generous timeout.
+
+    For TMDB API calls, automatically falls back to api.tmdb.org when
+    api.themoviedb.org is unreachable (common in mainland China).
+    """
+    is_tmdb = "api.themoviedb.org" in url
+    if is_tmdb:
+        # Short timeouts so the fallback kicks in quickly.
+        kwargs.setdefault("timeout", (6, 15))  # (connect, read)
+    else:
+        kwargs.setdefault("timeout", 30)
+    try:
+        return _http_session.get(url, **kwargs)
+    except Exception:
+        # Fallback: api.themoviedb.org -> api.tmdb.org (same API, different domain)
+        if is_tmdb:
+            fallback_url = url.replace("api.themoviedb.org", "api.tmdb.org")
+            kwargs["timeout"] = (10, 30)
+            return _http_session.get(fallback_url, **kwargs)
+        raise
+
+
 
 
 
@@ -1203,6 +1253,33 @@ st.markdown(f"""
         box-sizing: border-box !important;
     }}
     
+    .poster-placeholder {{
+        width: 100%;
+        aspect-ratio: 2 / 3 !important;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: {poster_placeholder_bg};
+        color: {poster_placeholder_text};
+        border-radius: 8px;
+        border: 1px solid {poster_border_color};
+        box-sizing: border-box;
+        font-size: 1.8rem;
+        font-weight: 700;
+        overflow: hidden;
+    }}
+    
+    .poster-placeholder-text {{
+        font-size: 0.7rem;
+        font-weight: 400;
+        text-align: center;
+        padding: 0.3rem 0.4rem;
+        line-height: 1.2;
+        opacity: 0.8;
+        word-break: break-word;
+    }}
+    
     .movie-poster-placeholder {{
         display: flex;
         align-items: center;
@@ -1919,7 +1996,7 @@ def search_tmdb_movies(title, api_key):
     url = f"https://api.themoviedb.org/3/search/movie"
     params = {"api_key": api_key, "query": title, "language": "en-US"}
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = _http_get(url, params=params)
         if r.status_code == 401:
             st.error("❌ TMDB API Key 无效（401），请在设置页面重新填入有效的 Key。")
             return []
@@ -1935,12 +2012,24 @@ def get_tmdb_movie_details(tmdb_id, api_key, lang=None):
     url = f"https://api.themoviedb.org/3/movie/{tmdb_id}"
     req_lang = lang if lang else st.session_state.get('lang', 'zh')
     params = {"api_key": api_key, "language": req_lang, "append_to_response": "credits,external_ids"}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        st.error(f"TMDB details fetch failed: {e}")
+    # Retry up to 3 times — TMDB can intermittently time out, especially the fallback domain
+    for _attempt in range(3):
+        try:
+            r = _http_get(url, params=params)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in (429, 500, 502, 503, 504):
+                import time as _time
+                _time.sleep(1 * (_attempt + 1))
+                continue
+            break  # other status codes — don't retry
+        except Exception:
+            if _attempt < 2:
+                import time as _time
+                _time.sleep(1 * (_attempt + 1))
+                continue
+            # Last attempt failed — silently skip (don't spam st.error during batch)
+            pass
     return None
 
 def generate_fuzzy_queries(title):
@@ -1996,7 +2085,7 @@ def search_imdb_suggestion(title):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = _http_get(url, headers=headers)
         if r.status_code == 200:
             data = r.json()
             results = []
@@ -2026,7 +2115,7 @@ def find_tmdb_movie_by_imdb_id(imdb_id, api_key):
         "language": "en-US"
     }
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = _http_get(url, params=params)
         if r.status_code == 200:
             results = r.json().get('movie_results', [])
             if results:
@@ -2039,7 +2128,7 @@ def fetch_wmdb_ratings(title_or_imdb):
     url = f"https://api.wmdb.tv/api/v1/movie"
     params = {"search": title_or_imdb} if not str(title_or_imdb).startswith('tt') else {"id": title_or_imdb}
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = _http_get(url, params=params)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
@@ -2445,7 +2534,7 @@ def get_best_tmdb_match(title, key, m_dict=None):
         try:
             url = f"https://api.themoviedb.org/3/search/movie"
             params = {"api_key": key, "query": title, "language": "en-US", "year": str(target_year)}
-            r = requests.get(url, params=params, timeout=10)
+            r = _http_get(url, params=params)
             if r.status_code == 200:
                 search_results = r.json().get('results', [])
         except Exception:
@@ -2677,7 +2766,7 @@ def search_duckduckgo_fallback(query):
     }
     url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = _http_get(url, headers=headers)
         if r.status_code == 200:
             snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', r.text, re.DOTALL)
             cleaned_snippets = []
@@ -2851,8 +2940,7 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                 if force or not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
                     poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
                     try:
-                        import requests
-                        img_r = requests.get(poster_url, timeout=10)
+                        img_r = _http_get(poster_url)
                         if img_r.status_code == 200:
                             with open(local_cover, 'wb') as img_f:
                                 img_f.write(img_r.content)
@@ -2918,7 +3006,7 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             if cover_url:
                 if force or not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
                     try:
-                        img_r = requests.get(cover_url, timeout=10)
+                        img_r = _http_get(cover_url)
                         if img_r.status_code == 200:
                             with open(local_cover, 'wb') as img_f:
                                 img_f.write(img_r.content)
@@ -2928,8 +3016,9 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             if os.path.exists(local_cover) and os.path.getsize(local_cover) > 0:
                 upload_poster_to_gdrive(m_id, local_cover, force_update=poster_downloaded)
             return True
-    except Exception:
-        pass
+    except Exception as _e:
+        import logging
+        logging.warning(f"autocomplete_movie_metadata_if_needed failed for m_id={m_id}: {_e}", exc_info=True)
     return False
 
 def suggest_mapping_rule(db_path, local_path):
@@ -3358,8 +3447,10 @@ def scan_local_directory(dir_path, scan_subdirs, add_new, link_existing):
                             lookup_map[norm_guess] = []
                         lookup_map[norm_guess].append(new_movie_dict)
                         
-                    # Auto-complete metadata from TMDB/IMDb/Douban synchronously
-                    autocomplete_movie_metadata_if_needed(new_id, new_movie_dict)
+                    # Defer metadata auto-complete to after scan completes (much faster scan)
+                    if "_scan_new_ids" not in st.session_state:
+                        st.session_state._scan_new_ids = []
+                    st.session_state._scan_new_ids.append((new_id, new_movie_dict))
                 except Exception as e:
                     stats["errors"] += 1
                     logs.append(t("scan_log_insert_failed", title=guessed_title, err=e))
@@ -3368,6 +3459,21 @@ def scan_local_directory(dir_path, scan_subdirs, add_new, link_existing):
  
     conn.commit()
     conn.close()
+
+    # Batch auto-complete metadata for newly added movies (after scan finishes)
+    _new_ids = st.session_state.pop("_scan_new_ids", [])
+    if _new_ids:
+        _progress = st.progress(0.0, text=("正在补全新影片元数据..." if st.session_state.lang == 'zh' else "Completing metadata for new movies..."))
+        for _idx, (_nid, _ndict) in enumerate(_new_ids):
+            _result = autocomplete_movie_metadata_if_needed(_nid, _ndict, force=True)
+            # Verify what was actually written to DB
+            _verify = get_movie_details(_nid)
+            _v = dict(_verify) if _verify else {}
+            import logging
+            logging.warning(f"batch_autocomplete: id={_nid} title={_ndict.get('title')} result={_result} title_zh={_v.get('title_zh')} plot_zh={(_v.get('plot_zh') or '')[:40]} director={_v.get('director')} genres={_v.get('genres')}")
+            _progress.progress((_idx + 1) / len(_new_ids), text=f"TMDB: {_ndict.get('title', '')} ({_idx + 1}/{len(_new_ids)})")
+        _progress.empty()
+
     return logs, stats
 
 def import_metadata_file(uploaded_file, import_mode):
@@ -3976,7 +4082,7 @@ def batch_metadata_dialog(covers_dir):
                             if poster_url:
                                 if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
                                     try:
-                                        img_r = requests.get(poster_url, timeout=10)
+                                        img_r = _http_get(poster_url)
                                         if img_r.status_code == 200:
                                             with open(local_cover, 'wb') as img_f:
                                                 img_f.write(img_r.content)
@@ -4282,9 +4388,72 @@ def render_settings_popover(total_count, seen_count, text_color, sub_text_color,
             st.session_state.show_movie_edit_dialog = False
             st.session_state.show_batch_dialog = False
             st.rerun()
+
+        # Cloud sync section (local only)
+        if not is_cloud:
+            st.markdown("---")
+            st.markdown(f"**{('☁️ 同步到云端' if st.session_state.lang == 'zh' else '☁️ Sync to Cloud')}**")
+            st.markdown(f"<div style='font-size:0.82rem;color:{sub_text_color};margin-bottom:0.5rem;'>{('上传海报到 Google Drive，推送数据库到 GitHub，触发云端自动更新。' if st.session_state.lang == 'zh' else 'Upload posters to Google Drive, push database to GitHub, trigger cloud auto-rebuild.')}</div>", unsafe_allow_html=True)
+            if st.button(("🚀 " + ("开始同步" if st.session_state.lang == 'zh' else "Start Sync")), use_container_width=True, key="header_cloud_sync_btn"):
+                with st.spinner(("正在同步..." if st.session_state.lang == 'zh' else "Syncing...")):
+                    import subprocess as _sp
+                    _sync_log = []
+                    try:
+                        _proc = _sp.run(
+                            ["/bin/bash", os.path.join(APP_DIR, "sync_to_cloud.sh")],
+                            capture_output=True, text=True, timeout=600,
+                            cwd=APP_DIR
+                        )
+                        _output = _proc.stdout + _proc.stderr
+                        if _proc.returncode == 0:
+                            st.success("✅ " + ("同步完成！" if st.session_state.lang == 'zh' else "Sync complete!"))
+                        else:
+                            st.error("❌ " + ("同步失败，请查看日志。" if st.session_state.lang == 'zh' else "Sync failed. Check logs."))
+                        if _output.strip():
+                            with st.expander(("同步日志" if st.session_state.lang == 'zh' else "Sync Log"), expanded=False):
+                                st.code(_output[-3000:], language="bash")
+                    except _sp.TimeoutExpired:
+                        st.error("❌ " + ("同步超时（10分钟）。" if st.session_state.lang == 'zh' else "Sync timed out (10 min)."))
+                    except Exception as e:
+                        st.error(f"❌ {e}")
                     
 
 # Shared dialog for Add and Edit Movie
+
+def get_clipboard_image(movie_id, covers_dir):
+    """Read an image from the macOS clipboard. Handles both Finder file copies and browser image copies.
+    Returns the local file path if successful, None otherwise."""
+    if sys.platform != 'darwin':
+        return None
+    import subprocess
+    local_path = os.path.join(covers_dir, f"{movie_id}.jpg")
+    img_exts = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff')
+
+    # 1. Try: Finder copied a file -> read the file path via AppleScript
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', 'set theFile to the clipboard as \u00abclass furl\u00bb', '-e', 'POSIX path of theFile'],
+            capture_output=True, text=True, timeout=5
+        )
+        path = result.stdout.strip()
+        if path and os.path.exists(path) and path.lower().endswith(img_exts):
+            with open(path, 'rb') as src, open(local_path, 'wb') as dst:
+                dst.write(src.read())
+            if os.path.getsize(local_path) > 0:
+                return local_path
+    except Exception:
+        pass
+
+    # 2. Try: Browser copied image data -> use pngpaste
+    try:
+        result = subprocess.run(['pngpaste', local_path], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            return local_path
+    except Exception:
+        pass
+
+    return None
+
 def render_manual_edit_form(movie=None):
     if movie is None:
         movie = {
@@ -4432,6 +4601,69 @@ def render_manual_edit_form(movie=None):
                     st.session_state.edit_mac_path = to_mac_path(chosen_file, rules)
                     st.rerun()
     
+    # --- Manual poster upload ---
+    st.markdown("---")
+    poster_section_label = "🖼️ " + ("手动设置海报" if st.session_state.lang == 'zh' else "Manual Poster")
+    st.markdown(f"**{poster_section_label}**")
+    covers_dir_edit = os.path.join(APP_DIR, 'covers')
+    current_cover = os.path.join(covers_dir_edit, f"{movie_id}.jpg") if movie_id else None
+    has_current_cover = current_cover and os.path.exists(current_cover) and os.path.getsize(current_cover) > 0
+
+    if has_current_cover:
+        st.markdown("<div style='font-size:0.8rem;opacity:0.7; margin-bottom: 0.5rem;'>✅ " + ("已有海报" if st.session_state.lang == 'zh' else "Poster exists") + "</div>", unsafe_allow_html=True)
+
+    # Row 1: URL download + clipboard paste
+    _poster_url_col, _poster_clip_col = st.columns(2)
+    with _poster_url_col:
+        _poster_url = st.text_input(
+            "海报图片 URL" if st.session_state.lang == 'zh' else "Poster Image URL",
+            value="",
+            key=f"poster_url_input_{movie_id}" if movie_id else "poster_url_input_new",
+            placeholder="https://...jpg/.png"
+        )
+        if st.button("📥 " + ("下载海报" if st.session_state.lang == 'zh' else "Download Poster"), use_container_width=True, key="btn_dl_poster"):
+            if not _poster_url.strip():
+                st.warning("⚠️ " + ("请输入图片 URL。" if st.session_state.lang == 'zh' else "Please enter an image URL."))
+            else:
+                try:
+                    img_r = _http_get(_poster_url.strip())
+                    if img_r.status_code == 200 and len(img_r.content) > 1000:
+                        local_cover_path = os.path.join(covers_dir_edit, f"{movie_id}.jpg")
+                        with open(local_cover_path, 'wb') as img_f:
+                            img_f.write(img_r.content)
+                        upload_poster_to_gdrive(movie_id, local_cover_path, force_update=True)
+                        st.success("✅ " + ("海报已保存！" if st.session_state.lang == 'zh' else "Poster saved!"))
+                    else:
+                        st.error("❌ " + ("下载失败，请检查 URL。" if st.session_state.lang == 'zh' else "Download failed. Check the URL."))
+                except Exception as e:
+                    st.error(f"❌ {e}")
+
+    with _poster_clip_col:
+        # Clipboard paste button (Python-side, reads macOS clipboard directly)
+        _clip_btn_label = "📋 " + ("从剪贴板粘贴" if st.session_state.lang == 'zh' else "Paste from Clipboard")
+        if st.button(_clip_btn_label, use_container_width=True, key="btn_clip_poster"):
+            _clip_saved = get_clipboard_image(movie_id, covers_dir_edit)
+            if _clip_saved:
+                upload_poster_to_gdrive(movie_id, _clip_saved, force_update=True)
+                st.success("✅ " + ("海报已从剪贴板粘贴！" if st.session_state.lang == 'zh' else "Poster pasted from clipboard!"))
+            else:
+                st.warning("⚠️ " + ("剪贴板中没有找到图片。" if st.session_state.lang == 'zh' else "No image found in clipboard."))
+
+    # Row 2: File upload (full width)
+    uploaded_poster = st.file_uploader(
+        "上传海报文件" if st.session_state.lang == 'zh' else "Upload Poster File",
+        type=['jpg', 'jpeg', 'png', 'webp'],
+        key=f"poster_upload_{movie_id}" if movie_id else "poster_upload_new",
+    )
+    if uploaded_poster:
+        local_cover_path = os.path.join(covers_dir_edit, f"{movie_id}.jpg")
+        with open(local_cover_path, 'wb') as img_f:
+            img_f.write(uploaded_poster.read())
+        upload_poster_to_gdrive(movie_id, local_cover_path, force_update=True)
+        st.success("✅ " + ("海报已上传！" if st.session_state.lang == 'zh' else "Poster uploaded!"))
+
+    st.markdown("---")
+
     bc1, bc2 = st.columns(2)
     with bc1:
         submit_edit = st.button(t("form_submit"), use_container_width=True, type="primary")
@@ -4563,7 +4795,16 @@ def render_batch_import_in_dialog():
 
 @st.dialog("🎬", width="large")
 def movie_edit_dialog(movie=None):
-    st.markdown("<style>button[aria-label='Close'] { display: none; }</style>", unsafe_allow_html=True)
+    st.markdown("""<style>
+    button[aria-label='Close'] { display: none; }
+    [data-testid="stDialog"] [data-testid="stVerticalBlock"] {
+        max-height: 85vh !important;
+        overflow-y: auto !important;
+    }
+    [data-testid="stFileUploader"] {
+        min-height: 100px !important;
+    }
+    </style>""", unsafe_allow_html=True)
     
     if movie is not None:
         st.markdown(f"<h3 style='margin-top:0;'>{t('manual_edit_title')}</h3>", unsafe_allow_html=True)
@@ -5349,7 +5590,7 @@ with st.container():
 
     with col_right_sort:
         with st.container(border=True):
-            sort_options = ["Year", "IMDb", "Douban", "Alpha", "Added"]
+            sort_options = ["Added", "Year", "IMDb", "Douban", "Alpha"]
             def format_sort(s):
                 t_key = f"sort_{s.lower()}"
                 return t(t_key) if t_key in I18N[st.session_state.lang] else s
@@ -5791,7 +6032,13 @@ with col_details:
                     if res_status == 'success':
                         st.success("✨ " + ("智能补全影片信息成功！" if st.session_state.lang == 'zh' else "Metadata autocompleted successfully!"))
                     else:
-                        st.error("❌ " + ("智能补全影片信息失败，请检查 TMDB Key 或影片名称。" if st.session_state.lang == 'zh' else "Failed to autocomplete metadata. Please check TMDB Key or movie title."))
+                        # Check if TMDB data was actually fetched but incomplete
+                        _movie_after = get_movie_details(movie['id'])
+                        _has_tmdb = _movie_after and dict(_movie_after).get('tmdb_id')
+                        if _has_tmdb:
+                            st.warning("⚠️ " + ("已从 TMDB 获取可用信息，但该影片在 TMDB 上数据不完整（缺少海报、评分等）。" if st.session_state.lang == 'zh' else "Fetched available data from TMDB, but this movie has incomplete metadata on TMDB (no poster, ratings, etc.)."))
+                        else:
+                            st.error("❌ " + ("智能补全影片信息失败，请检查 TMDB Key 或影片名称。" if st.session_state.lang == 'zh' else "Failed to autocomplete metadata. Please check TMDB Key or movie title."))
         
             # Load Cover JPG if exists
             covers_dir = os.path.join(APP_DIR, 'covers')
