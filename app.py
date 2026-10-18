@@ -2128,7 +2128,7 @@ def fetch_wmdb_ratings(title_or_imdb):
     url = f"https://api.wmdb.tv/api/v1/movie"
     params = {"search": title_or_imdb} if not str(title_or_imdb).startswith('tt') else {"id": title_or_imdb}
     try:
-        r = _http_get(url, params=params)
+        r = _http_get(url, params=params, timeout=(3, 5))
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
@@ -2136,6 +2136,26 @@ def fetch_wmdb_ratings(title_or_imdb):
     except Exception:
         pass
     return None
+
+def download_tmdb_poster(poster_path, local_cover):
+    if not poster_path:
+        return False
+
+    import urllib.parse
+    source_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+    fallback_url = f"https://wsrv.nl/?url={urllib.parse.quote(source_url, safe=':/')}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    for url in (source_url, fallback_url):
+        try:
+            r = _http_get(url, timeout=(5, 20), headers=headers)
+            if r.status_code == 200 and r.content:
+                with open(local_cover, "wb") as img_f:
+                    img_f.write(r.content)
+                return True
+        except Exception:
+            continue
+    return False
 
 # Base64 Poster Helper
 def get_cover_base64(movie_id):
@@ -2516,7 +2536,7 @@ def extract_metadata_from_path(physical_path):
             
     return path_title, path_year, detected_lang
 
-def get_best_tmdb_match(title, key, m_dict=None):
+def get_best_tmdb_match(title, key, m_dict=None, allow_imdb_hint=False):
     if not key:
         return None
         
@@ -2525,6 +2545,22 @@ def get_best_tmdb_match(title, key, m_dict=None):
     
     path_title, path_year, detected_lang = extract_metadata_from_path(physical_path)
     
+    # A filename year is the strongest signal. For undated files, IMDb's exact
+    # movie ranking resolves same-title releases better than raw TMDB popularity.
+    imdb_hint = None
+    if not path_year and (allow_imdb_hint or not db_year):
+        for cand in search_imdb_suggestion(title):
+            if cand.get("qid") != "movie" or not cand.get("year"):
+                continue
+            if get_normalization_key(cand.get("title")) == get_normalization_key(title):
+                imdb_hint = cand
+                break
+
+    if imdb_hint:
+        hinted_movie = find_tmdb_movie_by_imdb_id(imdb_hint["id"], key)
+        if hinted_movie:
+            return hinted_movie
+
     # 1. Determine target search year
     target_year = path_year or db_year
     
@@ -2847,7 +2883,7 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                     
         best = None
         for query in search_queries:
-            best = get_best_tmdb_match(query, key, m_dict)
+            best = get_best_tmdb_match(query, key, m_dict, allow_imdb_hint=force)
             if best:
                 break
                 
@@ -2858,7 +2894,7 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                 fuzzy_queries.extend(generate_fuzzy_queries(q))
             fuzzy_queries = list(dict.fromkeys(fuzzy_queries))
             for q in fuzzy_queries:
-                best = get_best_tmdb_match(q, key, m_dict)
+                best = get_best_tmdb_match(q, key, m_dict, allow_imdb_hint=force)
                 if best:
                     break
                     
@@ -2938,15 +2974,7 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             if poster_path:
                 poster_downloaded = False
                 if force or not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
-                    poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
-                    try:
-                        img_r = _http_get(poster_url)
-                        if img_r.status_code == 200:
-                            with open(local_cover, 'wb') as img_f:
-                                img_f.write(img_r.content)
-                            poster_downloaded = True
-                    except Exception:
-                        pass
+                    poster_downloaded = download_tmdb_poster(poster_path, local_cover)
                 
                 # Always ensure it is uploaded to GDrive if the local cover exists
                 if os.path.exists(local_cover) and os.path.getsize(local_cover) > 0:
@@ -3770,7 +3798,7 @@ def batch_metadata_dialog(covers_dir):
                                 search_queries.append(part.strip())
                                 
                     for query in search_queries:
-                        best = get_best_tmdb_match(query, key, m_dict)
+                        best = get_best_tmdb_match(query, key, m_dict, allow_imdb_hint=True)
                         if best:
                             break
                             
@@ -3780,7 +3808,7 @@ def batch_metadata_dialog(covers_dir):
                             fuzzy_queries.extend(generate_fuzzy_queries(q))
                         fuzzy_queries = list(dict.fromkeys(fuzzy_queries))
                         for q in fuzzy_queries:
-                            best = get_best_tmdb_match(q, key, m_dict)
+                            best = get_best_tmdb_match(q, key, m_dict, allow_imdb_hint=True)
                             if best:
                                 break
                                 
@@ -4075,11 +4103,10 @@ def batch_metadata_dialog(covers_dir):
                             local_cover = os.path.join(covers_dir, f"{m_id}.jpg")
                             poster_url = None
                             if p.get("poster_path"):
-                                poster_url = f"https://image.tmdb.org/t/p/w500{p['poster_path']}"
+                                if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
+                                    download_tmdb_poster(p["poster_path"], local_cover)
                             elif p.get("category") == "imdb_only" and p.get("imdb_cover"):
                                 poster_url = p["imdb_cover"]
-                                
-                            if poster_url:
                                 if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
                                     try:
                                         img_r = _http_get(poster_url)
@@ -5264,63 +5291,64 @@ with st.container():
 
         st.markdown("---")
         
-        # Table Header
-        col_h1, col_h2, col_h3, col_h4 = st.columns([1.8, 3.3, 3.3, 1.6], vertical_alignment="center")
-        with col_h1:
-            st.markdown(f"**{t('table_hdr_movie')}**")
-        with col_h2:
-            st.markdown(f"**{t('table_hdr_orig_path')}**")
-        with col_h3:
-            st.markdown(f"**{t('table_hdr_curr_path')}**")
-        with col_h4:
-            st.markdown(f"**{t('table_hdr_action')}**")
-        st.markdown("<hr style='margin:0.2rem 0 0.5rem 0;'>", unsafe_allow_html=True)
+        with st.container(height=450, border=True):
+            # Table Header
+            col_h1, col_h2, col_h3, col_h4 = st.columns([1.8, 3.3, 3.3, 1.6], vertical_alignment="center")
+            with col_h1:
+                st.markdown(f"**{t('table_hdr_movie')}**")
+            with col_h2:
+                st.markdown(f"**{t('table_hdr_orig_path')}**")
+            with col_h3:
+                st.markdown(f"**{t('table_hdr_curr_path')}**")
+            with col_h4:
+                st.markdown(f"**{t('table_hdr_action')}**")
+            st.markdown("<hr style='margin:0.2rem 0 0.5rem 0;'>", unsafe_allow_html=True)
         
-        # Table Rows
-        for idx, item in enumerate(approvals):
-            col_r1, col_r2, col_r3, col_r4 = st.columns([1.8, 3.3, 3.3, 1.6], vertical_alignment="center")
-            with col_r1:
-                db_movie_title = item['db_movie']['title_zh'] if st.session_state.lang == 'zh' and item['db_movie'].get('title_zh') else item['db_movie']['title']
-                st.markdown(f"**{db_movie_title}** ({item['db_movie']['year'] or t('unknown_val')})")
-                scen = item.get("scenario")
-                if scen == "i":
-                    prompt_label = "提示: 修改Win路径" if st.session_state.lang == 'zh' else "Prompt: Update Windows Path"
-                    st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
-                elif scen == "ii":
-                    prompt_label = "提示: 增加挂载路径" if st.session_state.lang == 'zh' else "Prompt: Add Mount Path"
-                    st.markdown(f"<span style='font-size:0.72rem;background:rgba(56,189,248,0.12);color:#38bdf8;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
-                elif scen == "iii":
-                    prompt_label = "提示: 填充Win路径" if st.session_state.lang == 'zh' else "Prompt: Fill Windows Path"
-                    st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
-                elif scen == "iv":
-                    prompt_label = "提示: 更新OS路径" if st.session_state.lang == 'zh' else "Prompt: Update OS Path"
-                    st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
-                elif item.get("old_file_exists", True):
-                    st.markdown(f"<span style='font-size:0.72rem;background:rgba(239,68,68,0.12);color:#f87171;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{t('status_duplicate')}</span>", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{t('status_moved')}</span>", unsafe_allow_html=True)
-            with col_r2:
-                st.markdown(f"<div style='word-break:break-all;font-size:0.75rem;color:#94a3b8;background:rgba(255,255,255,0.03);padding:0.35rem 0.5rem;border-radius:0.25rem;font-family:monospace;border:1px solid rgba(255,255,255,0.05);'>{item['db_movie']['physical_path']}</div>", unsafe_allow_html=True)
-            with col_r3:
-                st.markdown(f"<div style='word-break:break-all;font-size:0.75rem;color:#38bdf8;background:rgba(56,189,248,0.03);padding:0.35rem 0.5rem;border-radius:0.25rem;font-family:monospace;border:1px solid rgba(56,189,248,0.08);'>{item['filepath']}</div>", unsafe_allow_html=True)
-            with col_r4:
-                options = {
-                    "update": t("action_update"),
-                    "mapping": t("action_mapping"),
-                    "link": t("action_link"),
-                    "add": t("action_add"),
-                    "skip": t("action_skip")
-                }
-                decision_val = st.selectbox(
-                    f"Action {idx}",
-                    options=list(options.keys()),
-                    format_func=lambda x: options[x],
-                    index=list(options.keys()).index(decisions[idx]) if decisions[idx] in options else 0,
-                    key=f"sel_decision_{idx}",
-                    label_visibility="collapsed"
-                )
-                decisions[idx] = decision_val
-            st.markdown("<div style='border-bottom:1px solid rgba(255,255,255,0.06);margin:0.3rem 0;'></div>", unsafe_allow_html=True)
+            # Table Rows
+            for idx, item in enumerate(approvals):
+                col_r1, col_r2, col_r3, col_r4 = st.columns([1.8, 3.3, 3.3, 1.6], vertical_alignment="center")
+                with col_r1:
+                    db_movie_title = item['db_movie']['title_zh'] if st.session_state.lang == 'zh' and item['db_movie'].get('title_zh') else item['db_movie']['title']
+                    st.markdown(f"**{db_movie_title}** ({item['db_movie']['year'] or t('unknown_val')})")
+                    scen = item.get("scenario")
+                    if scen == "i":
+                        prompt_label = "提示: 修改Win路径" if st.session_state.lang == 'zh' else "Prompt: Update Windows Path"
+                        st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
+                    elif scen == "ii":
+                        prompt_label = "提示: 增加挂载路径" if st.session_state.lang == 'zh' else "Prompt: Add Mount Path"
+                        st.markdown(f"<span style='font-size:0.72rem;background:rgba(56,189,248,0.12);color:#38bdf8;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
+                    elif scen == "iii":
+                        prompt_label = "提示: 填充Win路径" if st.session_state.lang == 'zh' else "Prompt: Fill Windows Path"
+                        st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
+                    elif scen == "iv":
+                        prompt_label = "提示: 更新OS路径" if st.session_state.lang == 'zh' else "Prompt: Update OS Path"
+                        st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{prompt_label}</span>", unsafe_allow_html=True)
+                    elif item.get("old_file_exists", True):
+                        st.markdown(f"<span style='font-size:0.72rem;background:rgba(239,68,68,0.12);color:#f87171;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{t('status_duplicate')}</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<span style='font-size:0.72rem;background:rgba(234,179,8,0.12);color:#facc15;padding:0.1rem 0.35rem;border-radius:0.25rem;'>{t('status_moved')}</span>", unsafe_allow_html=True)
+                with col_r2:
+                    st.markdown(f"<div style='word-break:break-all;font-size:0.75rem;color:#94a3b8;background:rgba(255,255,255,0.03);padding:0.35rem 0.5rem;border-radius:0.25rem;font-family:monospace;border:1px solid rgba(255,255,255,0.05);'>{item['db_movie']['physical_path']}</div>", unsafe_allow_html=True)
+                with col_r3:
+                    st.markdown(f"<div style='word-break:break-all;font-size:0.75rem;color:#38bdf8;background:rgba(56,189,248,0.03);padding:0.35rem 0.5rem;border-radius:0.25rem;font-family:monospace;border:1px solid rgba(56,189,248,0.08);'>{item['filepath']}</div>", unsafe_allow_html=True)
+                with col_r4:
+                    options = {
+                        "update": t("action_update"),
+                        "mapping": t("action_mapping"),
+                        "link": t("action_link"),
+                        "add": t("action_add"),
+                        "skip": t("action_skip")
+                    }
+                    decision_val = st.selectbox(
+                        f"Action {idx}",
+                        options=list(options.keys()),
+                        format_func=lambda x: options[x],
+                        index=list(options.keys()).index(decisions[idx]) if decisions[idx] in options else 0,
+                        key=f"sel_decision_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    decisions[idx] = decision_val
+                st.markdown("<div style='border-bottom:1px solid rgba(255,255,255,0.06);margin:0.3rem 0;'></div>", unsafe_allow_html=True)
             
         # Bottom Actions
         st.markdown("<br>", unsafe_allow_html=True)
