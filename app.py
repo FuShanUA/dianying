@@ -28,6 +28,20 @@ import base64
 import json
 import re
 from PIL import Image
+from batch_completion import (
+    BATCH_BASIC_FIELDS,
+    BATCH_BASIC_MISSING_SQL,
+    BASIC_FIELD_CONDITIONS,
+    EXTRA_FIELD_CONDITIONS,
+    METADATA_FIELD_CONDITIONS,
+    build_extra_fill_fields,
+    compose_missing_where,
+    contains_chinese,
+    filter_batch_fields,
+    is_empty_value,
+    is_missing_value,
+    missing_field_cond,
+)
 
 # Define relative path base
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1916,6 +1930,13 @@ def search_movies(query, genre_filter, status_filter, country_filter, year_filte
             sql += " AND imdb_rating >= ? AND imdb_rating <= ?"
             params.extend([min_val, max_val])
             
+    miss_fields = st.session_state.get('missing_filter_fields') or ()
+    if miss_fields:
+        conds = [METADATA_FIELD_CONDITIONS[k] for k in miss_fields if k in METADATA_FIELD_CONDITIONS]
+        if conds:
+            joiner = " OR " if st.session_state.get('missing_filter_mode', 'any') == 'any' else " AND "
+            sql += " AND (" + joiner.join(f"({c})" for c in conds) + ")"
+
     sql += " ORDER BY id DESC"
     
     cur.execute(sql, params)
@@ -1980,6 +2001,31 @@ def delete_movie(movie_id):
     conn.commit()
     conn.close()
 
+def reset_movie_metadata(movie_id):
+    """Clear auto-filled metadata and mapping ids so a wrong match can be redone."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE movies SET
+            original_title=NULL, director=NULL, actors=NULL, genres=NULL,
+            year=NULL, runtime=NULL, country=NULL, plot=NULL,
+            imdb_id=NULL, imdb_rating=NULL, douban_id=NULL, douban_rating=NULL,
+            tmdb_id=NULL, title_zh=NULL, director_zh=NULL, actors_zh=NULL,
+            plot_zh=NULL, languages=NULL, original_language=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE id = ?""",
+        (movie_id,),
+    )
+    cur.execute("DELETE FROM batch_field_attempts WHERE movie_id = ?", (movie_id,))
+    conn.commit()
+    conn.close()
+    cover_path = os.path.join(APP_DIR, 'covers', f"{movie_id}.jpg")
+    if os.path.exists(cover_path):
+        try:
+            os.remove(cover_path)
+        except Exception:
+            pass
+
 def insert_new_movie(title):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1988,6 +2034,32 @@ def insert_new_movie(title):
     conn.commit()
     conn.close()
     return new_id
+
+def ensure_batch_attempt_table():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS batch_field_attempts ("
+        "movie_id INTEGER NOT NULL, field TEXT NOT NULL, "
+        "attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (movie_id, field))"
+    )
+    conn.commit()
+    conn.close()
+
+def record_batch_field_attempts(movie_id, fields):
+    if not fields:
+        return
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT OR IGNORE INTO batch_field_attempts (movie_id, field) VALUES (?, ?)",
+        [(movie_id, f) for f in fields],
+    )
+    conn.commit()
+    conn.close()
+
+ensure_batch_attempt_table()
 
 # Metadata Fetching (TMDB & WMDB APIs)
 def search_tmdb_movies(title, api_key):
@@ -2030,6 +2102,42 @@ def get_tmdb_movie_details(tmdb_id, api_key, lang=None):
                 continue
             # Last attempt failed — silently skip (don't spam st.error during batch)
             pass
+    # Some legacy entries (for example the 2009 "Alice" miniseries) live on the
+    # TV side of TMDB; fall back to TV details normalized to movie shape.
+    return get_tmdb_tv_as_movie(tmdb_id, api_key, lang)
+
+def get_tmdb_tv_as_movie(tv_id, api_key, lang=None):
+    if not api_key:
+        return None
+    url = f"https://api.themoviedb.org/3/tv/{tv_id}"
+    params = {
+        "api_key": api_key,
+        "language": lang if lang else st.session_state.get('lang', 'zh'),
+        "append_to_response": "credits,external_ids",
+    }
+    try:
+        r = _http_get(url, params=params)
+        if r.status_code == 200:
+            d = r.json()
+            return {
+                "id": d.get("id"),
+                "title": d.get("name"),
+                "original_title": d.get("original_name"),
+                "release_date": d.get("first_air_date"),
+                "poster_path": d.get("poster_path"),
+                "vote_average": d.get("vote_average"),
+                "overview": d.get("overview"),
+                "original_language": d.get("original_language"),
+                "genres": d.get("genres", []),
+                "production_countries": d.get("production_countries", []),
+                "spoken_languages": d.get("spoken_languages", []),
+                "credits": d.get("credits", {}),
+                "external_ids": d.get("external_ids", {}),
+                "runtime": (d.get("episode_run_time") or [None])[0],
+                "_kind": "tv",
+            }
+    except Exception:
+        pass
     return None
 
 def generate_fuzzy_queries(title):
@@ -2105,7 +2213,7 @@ def search_imdb_suggestion(title):
         pass
     return []
 
-def find_tmdb_movie_by_imdb_id(imdb_id, api_key):
+def find_tmdb_movie_by_imdb_id(imdb_id, api_key, include_tv=False):
     if not imdb_id or not api_key:
         return None
     url = f"https://api.themoviedb.org/3/find/{imdb_id}"
@@ -2120,9 +2228,44 @@ def find_tmdb_movie_by_imdb_id(imdb_id, api_key):
             results = r.json().get('movie_results', [])
             if results:
                 return results[0]
+            if include_tv:
+                tvs = r.json().get('tv_results', [])
+                if tvs:
+                    return get_tmdb_tv_as_movie(tvs[0]['id'], api_key)
     except Exception:
         pass
     return None
+
+def rank_imdb_candidates(cands, m_dict):
+    """Rank IMDb suggestions like a human: exact title and year matter most."""
+    p_path = m_dict.get('physical_path') or m_dict.get('physical_path_mac') or ''
+    _pt, p_year, _pl = extract_metadata_from_path(p_path)
+    db_title = (m_dict.get('title') or '').lower().strip()
+    db_year = m_dict.get('year')
+
+    def sc(c):
+        s = 0
+        ct = (c.get('title') or '').lower().strip()
+        if db_title and ct:
+            if db_title == ct:
+                s += 100
+            elif db_title in ct or ct in db_title:
+                s += 40
+        cy = c.get('year')
+        for sig in (p_year, db_year):
+            if sig and cy:
+                try:
+                    if int(sig) == int(cy):
+                        s += 60
+                        break
+                    elif abs(int(sig) - int(cy)) == 1:
+                        s += 30
+                        break
+                except (TypeError, ValueError):
+                    pass
+        return s
+
+    return sorted(cands, key=sc, reverse=True)
 
 def fetch_wmdb_ratings(title_or_imdb):
     url = f"https://api.wmdb.tv/api/v1/movie"
@@ -2655,6 +2798,379 @@ def get_normalization_key(t_str):
     t_clean = re.sub(r'[^\w\u4e00-\u9fff]', '', t_str.lower())
     return t_clean
 
+def search_tmdb_person(name, api_key):
+    if not api_key or not name:
+        return []
+    url = "https://api.themoviedb.org/3/search/person"
+    params = {"api_key": api_key, "query": name, "language": "zh-CN"}
+    try:
+        r = _http_get(url, params=params)
+        if r.status_code == 200:
+            return r.json().get('results', [])
+    except Exception:
+        pass
+    return []
+
+def discover_person_movies(person_id, api_key):
+    if not api_key or not person_id:
+        return []
+    url = f"https://api.themoviedb.org/3/person/{person_id}/movie_credits"
+    params = {"api_key": api_key, "language": "en-US"}
+    try:
+        r = _http_get(url, params=params)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get('cast', []) + data.get('crew', [])
+    except Exception:
+        pass
+    return []
+
+def guess_chinese_title_via_web(title, director="", year=None):
+    """Human-like grounding: resolve a bare or numeric title to its Chinese name via web search."""
+    import urllib.parse
+    import html as _html
+    if not title:
+        return ""
+    q = f"{title} 电影"
+    if director:
+        q += f" {director}"
+    if year:
+        q += f" {year}"
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(q)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        r = _http_get(url, headers=headers)
+        if r.status_code == 200:
+            text = re.sub(r'<[^>]+>', ' ', r.text)
+            text = _html.unescape(text)
+            m = re.search(r'《([^》]{1,40})》', text)
+            if m:
+                return m.group(1).strip()
+    except Exception:
+        pass
+    return ""
+
+def search_tmdb_tv(title, api_key, year=None):
+    if not api_key or not title:
+        return []
+    url = "https://api.themoviedb.org/3/search/tv"
+    params = {"api_key": api_key, "query": title, "language": "en-US"}
+    if year:
+        params["first_air_date_year"] = str(year)
+    try:
+        r = _http_get(url, params=params)
+        if r.status_code == 200:
+            return r.json().get('results', [])
+    except Exception:
+        pass
+    return []
+
+def guess_imdb_id_via_web(title, year=None):
+    """Human-like grounding: locate the IMDb id straight from web search results."""
+    import urllib.parse
+    if not title:
+        return None
+    q = f"{title} {year} imdb" if year else f"{title} imdb"
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(q)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        r = _http_get(url, headers=headers)
+        if r.status_code == 200:
+            m = re.search(r'(tt\d{7,})', r.text)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+def _director_names_from_details(details):
+    return [c.get('name') for c in (details.get('credits') or {}).get('crew', []) if c.get('job') == 'Director']
+
+def score_details_against_signals(details, signals, director_provenance=False):
+    """Cross-signal scoring: title, year, language, country, director, poster."""
+    score = 0
+    db_title = (signals.get('title') or '').strip().lower()
+    cand_titles = [(details.get('title') or '').lower(), (details.get('original_title') or '').lower()]
+    if db_title:
+        for ct in cand_titles:
+            if not ct:
+                continue
+            if db_title == ct:
+                score += 100
+                break
+            elif db_title in ct or ct in db_title:
+                score += 40
+                break
+    if db_title.isdigit() and any(contains_chinese(ct) for ct in cand_titles if ct):
+        score += 60
+    rd = details.get('release_date') or ''
+    r_year = int(rd.split('-')[0]) if rd else None
+    for sig_year in (signals.get('path_year'), signals.get('year')):
+        if sig_year and r_year:
+            if r_year == sig_year:
+                score += 60
+                break
+            elif abs(r_year - sig_year) == 1:
+                score += 30
+                break
+    lang = signals.get('language')
+    if lang and details.get('original_language') == lang:
+        score += 80
+    countries = [c.get('name') for c in details.get('production_countries', [])]
+    sig_country = signals.get('country')
+    if sig_country and countries:
+        if any(sig_country.lower() in c.lower() or c.lower() in sig_country.lower() for c in countries):
+            score += 40
+    if director_provenance:
+        score += 120
+    else:
+        sig_dir = (signals.get('director') or '').strip()
+        if sig_dir:
+            names = [n.lower() for n in _director_names_from_details(details) if n]
+            if any(sig_dir.lower() == n or sig_dir.lower() in n or n in sig_dir.lower() for n in names):
+                score += 120
+    if details.get('poster_path'):
+        score += 5
+    return score
+
+def ground_tmdb_match(m_dict, key):
+    """Multi-signal grounding fallback combining director filmography, web Chinese
+    title resolution and cross-field verification, mimicking human judgement."""
+    if not key:
+        return None, 0
+    p_path = m_dict.get('physical_path') or m_dict.get('physical_path_mac') or ''
+    _pt, p_year, p_lang = extract_metadata_from_path(p_path)
+    language = m_dict.get('original_language') or (m_dict.get('languages') or '').split(',')[0].strip() or None
+    if not language and p_lang:
+        language = p_lang
+    signals = {
+        'title': m_dict.get('title'),
+        'year': m_dict.get('year'),
+        'path_year': p_year,
+        'language': language,
+        'country': m_dict.get('country'),
+        'director': m_dict.get('director_zh') or m_dict.get('director'),
+    }
+    candidates = []
+    seen = set()
+    director = signals['director']
+    if director:
+        for person in search_tmdb_person(director, key)[:2]:
+            for mov in discover_person_movies(person.get('id'), key):
+                mid = mov.get('id')
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    candidates.append((mov, True))
+    zh_guess = guess_chinese_title_via_web(signals['title'] or '', director or '', signals.get('year'))
+    queries = [signals['title']]
+    if zh_guess and zh_guess != signals['title']:
+        queries.append(zh_guess)
+    for q in queries:
+        if not q:
+            continue
+        for mov in search_tmdb_movies(q, key)[:6]:
+            mid = mov.get('id')
+            if mid and mid not in seen:
+                seen.add(mid)
+                candidates.append((mov, False))
+    for q in queries:
+        if not q:
+            continue
+        for mov in search_tmdb_tv(q, key, p_year or m_dict.get('year'))[:5]:
+            mid = mov.get('id')
+            if mid and mid not in seen:
+                seen.add(mid)
+                candidates.append((mov, False))
+    web_imdb = guess_imdb_id_via_web(signals['title'], p_year or m_dict.get('year'))
+    if web_imdb:
+        mov = find_tmdb_movie_by_imdb_id(web_imdb, key, include_tv=True)
+        if mov:
+            mid = mov.get('id')
+            if mid and mid not in seen:
+                seen.add(mid)
+                candidates.append((mov, True))
+    best = None
+    best_score = 0
+    for mov, prov in candidates[:12]:
+        details = get_tmdb_movie_details(mov.get('id'), key, lang='en-US')
+        if not details:
+            continue
+        s = score_details_against_signals(details, signals, director_provenance=prov)
+        if s > best_score:
+            best_score = s
+            best = details
+    return best, best_score
+
+def collect_match_candidates(m_dict, key, limit=8, max_detail_fetch=16):
+    """Gather candidate matches from every information source with provenance labels."""
+    if not key:
+        return [], {}
+    p_path = m_dict.get('physical_path') or m_dict.get('physical_path_mac') or ''
+    _pt, p_year, p_lang = extract_metadata_from_path(p_path)
+    language = m_dict.get('original_language') or (m_dict.get('languages') or '').split(',')[0].strip() or None
+    if not language and p_lang:
+        language = p_lang
+    signals = {
+        'title': m_dict.get('title'),
+        'year': m_dict.get('year'),
+        'path_year': p_year,
+        'language': language,
+        'country': m_dict.get('country'),
+        'director': m_dict.get('director_zh') or m_dict.get('director'),
+    }
+    raw = []
+    seen = set()
+
+    def add(source, movie, prov=False):
+        mid = (movie or {}).get('id')
+        if not mid or mid in seen:
+            return
+        seen.add(mid)
+        raw.append((source, movie, prov))
+
+    if m_dict.get('tmdb_id'):
+        d = get_tmdb_movie_details(m_dict['tmdb_id'], key, lang='en-US')
+        if d:
+            add("已有 TMDB ID", d, True)
+    if m_dict.get('imdb_id'):
+        d = find_tmdb_movie_by_imdb_id(m_dict['imdb_id'], key, include_tv=True)
+        if d:
+            add("已有 IMDb ID", d, True)
+
+    title = m_dict.get('title') or ''
+    zh_t, en_t = split_chinese_english(title)
+    queries = [title]
+    if zh_t and zh_t != title:
+        queries.append(zh_t)
+    if en_t and en_t != title:
+        queries.append(en_t)
+    for q in queries:
+        if not q:
+            continue
+        for mov in search_tmdb_movies(q, key)[:3]:
+            add(f"TMDB 片名搜索: {q}", mov)
+
+    for q in queries:
+        if not q:
+            continue
+        for mov in search_tmdb_tv(q, key, p_year or m_dict.get('year'))[:5]:
+            add(f"TMDB 剧集搜索: {q}", mov)
+
+    ranked_sugs = rank_imdb_candidates(search_imdb_suggestion(title), m_dict)
+    for cand in ranked_sugs[:6]:
+        mov = find_tmdb_movie_by_imdb_id(cand['id'], key, include_tv=True)
+        if mov:
+            add(f"IMDb 联想: {cand.get('title', '')}", mov)
+
+    web_imdb = guess_imdb_id_via_web(title, p_year or m_dict.get('year'))
+    if web_imdb:
+        mov = find_tmdb_movie_by_imdb_id(web_imdb, key, include_tv=True)
+        if mov:
+            add(f"网页 IMDb ID: {web_imdb}", mov)
+
+    if signals['director']:
+        for person in search_tmdb_person(signals['director'], key)[:1]:
+            for mov in discover_person_movies(person.get('id'), key)[:30]:
+                add(f"导演作品谱系: {signals['director']}", mov, True)
+
+    zh_guess = guess_chinese_title_via_web(title, signals['director'] or '', signals.get('year'))
+    if zh_guess and zh_guess != title:
+        for mov in search_tmdb_movies(zh_guess, key)[:3]:
+            add(f"网页中文片名: {zh_guess}", mov)
+
+    candidates = []
+    fetched = 0
+    for source, mov, prov in raw:
+        if fetched >= max_detail_fetch:
+            break
+        details = mov if (mov.get('credits') or mov.get('production_countries')) else get_tmdb_movie_details(mov.get('id'), key, lang='en-US')
+        if not details:
+            continue
+        fetched += 1
+        candidates.append({
+            "source": source,
+            "details": details,
+            "score": score_details_against_signals(details, signals, director_provenance=prov),
+        })
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    return candidates[:limit], signals
+
+@st.dialog("✨ 智能补全确认")
+def movie_match_dialog(movie):
+    st.markdown("<style>button[aria-label='Close'] { display: none; }</style>", unsafe_allow_html=True)
+    m_dict = dict(movie)
+    key = load_tmdb_key()
+    if not key:
+        st.warning(t("batch_key_warning"))
+        if st.button("关闭" if st.session_state.lang == 'zh' else "Close", use_container_width=True, key="match_close_nokey"):
+            st.session_state.show_match_dialog = False
+            st.rerun()
+        return
+
+    if st.session_state.get('match_candidate_movie') != movie['id'] or 'match_candidates' not in st.session_state:
+        with st.spinner("正在收集候选与信息源..."):
+            cands, signals = collect_match_candidates(m_dict, key)
+        st.session_state.match_candidates = cands
+        st.session_state.match_signals = signals
+        st.session_state.match_candidate_movie = movie['id']
+
+    cands = st.session_state.get('match_candidates', [])
+    sig = st.session_state.get('match_signals', {})
+    st.markdown(f"<h3 style='margin-top:0;'>{m_dict.get('title')}</h3>", unsafe_allow_html=True)
+    sig_line = (
+        f"匹配信号：片名={sig.get('title') or '?'} | 库中年份={sig.get('year') or '?'} | 路径年份={sig.get('path_year') or '?'} | "
+        f"语言={sig.get('language') or '?'} | 地区={sig.get('country') or '?'} | 导演={sig.get('director') or '?'}"
+        if st.session_state.lang == 'zh' else
+        f"Signals: title={sig.get('title') or '?'} | db year={sig.get('year') or '?'} | path year={sig.get('path_year') or '?'} | "
+        f"language={sig.get('language') or '?'} | country={sig.get('country') or '?'} | director={sig.get('director') or '?'}"
+    )
+    st.caption(sig_line)
+
+    if not cands:
+        st.info("未找到任何候选匹配。" if st.session_state.lang == 'zh' else "No candidate matches found.")
+        if st.button("关闭" if st.session_state.lang == 'zh' else "Close", use_container_width=True, key="match_close_empty"):
+            st.session_state.show_match_dialog = False
+            st.rerun()
+        return
+
+    options = []
+    for c in cands:
+        d = c['details']
+        rd = d.get('release_date') or ''
+        yr = rd.split('-')[0] if rd else '?'
+        dirs = ", ".join(_director_names_from_details(d)[:2]) or '?'
+        countries = ", ".join(x.get('name') for x in d.get('production_countries', [])) or '?'
+        options.append(
+            f"[{c['source']}] {d.get('title')} ({yr}) | 匹配分 {c['score']} | 语言 {d.get('original_language')} | 地区 {countries} | 导演 {dirs}"
+        )
+    choice = st.radio("选择要应用的匹配（含信息源）" if st.session_state.lang == 'zh' else "Select match to apply (with source)", options, index=0)
+
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("✅ 确认补全该项", use_container_width=True, type="primary", key="match_apply_btn"):
+            idx = options.index(choice)
+            sel = cands[idx]
+            with st.spinner("正在写入元数据..."):
+                ok = autocomplete_movie_metadata_if_needed(movie['id'], movie, force=True, preselected_best=sel['details'])
+            st.session_state.show_match_dialog = False
+            st.session_state.match_candidates = []
+            st.session_state.match_candidate_movie = None
+            if ok:
+                st.toast("✅ 已按所选信息源补全。" if st.session_state.lang == 'zh' else "✅ Autocompleted from selected source.")
+            else:
+                st.toast("⚠️ 未能写入，请检查网络或手动编辑。" if st.session_state.lang == 'zh' else "⚠️ Write failed; check network or edit manually.")
+            st.rerun()
+    with colB:
+        if st.button("取消" if st.session_state.lang == 'zh' else "Cancel", use_container_width=True, key="match_cancel_btn"):
+            st.session_state.show_match_dialog = False
+            st.session_state.match_candidates = []
+            st.session_state.match_candidate_movie = None
+            st.rerun()
+
 def split_chinese_english(title):
     if not title:
         return "", ""
@@ -2827,7 +3343,7 @@ def search_duckduckgo_fallback(query):
         pass
     return None, None
 
-def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
+def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False, preselected_best=None):
     m_dict = dict(db_movie)
     covers_dir_local = os.path.join(APP_DIR, 'covers')
     local_cover = os.path.join(covers_dir_local, f"{m_id}.jpg")
@@ -2881,11 +3397,23 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                 for part in re.split(r'\s+aka\s+', en_t, flags=re.IGNORECASE):
                     search_queries.append(part.strip())
                     
-        best = None
-        for query in search_queries:
-            best = get_best_tmdb_match(query, key, m_dict, allow_imdb_hint=force)
-            if best:
-                break
+        best = preselected_best
+        # Anchor to existing mapping / English metadata first so same-title
+        # movies (for example "Alice") cannot be re-matched to a wrong entry.
+        # If the stored tmdb_id and imdb_id disagree, trust neither and fall
+        # back to search/grounding so a human can pick in the confirm dialog.
+        if not best:
+            t_det = get_tmdb_movie_details(m_dict['tmdb_id'], key, lang='en-US') if m_dict.get('tmdb_id') else None
+            i_det = find_tmdb_movie_by_imdb_id(m_dict['imdb_id'], key, include_tv=True) if m_dict.get('imdb_id') else None
+            if t_det and i_det and str(t_det.get('id')) != str(i_det.get('id')):
+                best = None
+            else:
+                best = t_det or i_det
+        if not best:
+            for query in search_queries:
+                best = get_best_tmdb_match(query, key, m_dict, allow_imdb_hint=force)
+                if best:
+                    break
                 
         # Try fuzzy queries if still not found
         if not best:
@@ -2907,12 +3435,18 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
                     imdb_candidates = search_imdb_suggestion(q)
                     if imdb_candidates:
                         break
+            imdb_candidates = rank_imdb_candidates(imdb_candidates, m_dict)
             if imdb_candidates:
                 for cand in imdb_candidates:
-                    tmdb_movie = find_tmdb_movie_by_imdb_id(cand['id'], key)
+                    tmdb_movie = find_tmdb_movie_by_imdb_id(cand['id'], key, include_tv=True)
                     if tmdb_movie:
                         best = tmdb_movie
                         break
+
+        if not best:
+            g_best, g_score = ground_tmdb_match(m_dict, key)
+            if g_best and g_score >= 180:
+                best = g_best
 
         if best:
             tmdb_id = best['id']
@@ -2984,8 +3518,10 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             def use_new_if_empty(k, new_val):
                 val = m_dict.get(k)
                 if force:
-                    return new_val if new_val else val
-                return val if val else new_val
+                    if not is_missing_value(k, new_val):
+                        return new_val
+                    return val if not is_missing_value(k, val) else new_val
+                return val if not is_missing_value(k, val) else new_val
 
             update_movie_fields(m_id, {
                 'original_title': use_new_if_empty('original_title', original_title),
@@ -3019,8 +3555,10 @@ def autocomplete_movie_metadata_if_needed(m_id, db_movie, force=False):
             def use_new_if_empty(k, new_val):
                 val = m_dict.get(k)
                 if force:
-                    return new_val if new_val else val
-                return val if val else new_val
+                    if not is_missing_value(k, new_val):
+                        return new_val
+                    return val if not is_missing_value(k, val) else new_val
+                return val if not is_missing_value(k, val) else new_val
                 
             update_movie_fields(m_id, {
                 'original_title': use_new_if_empty('original_title', original_title),
@@ -3714,6 +4252,50 @@ if url_loaded:
 # Helper to render Settings Popover (Hidden in Cloud)
 
 
+def _sync_batch_group(group_key, movie_ids):
+    """Propagate a group-level select-all checkbox to its per-movie checkboxes."""
+    value = bool(st.session_state.get(group_key, False))
+    for mid in movie_ids:
+        st.session_state[f"proposal_cb_{mid}"] = value
+
+
+def _clear_batch_selection_state():
+    for _k in [k for k in list(st.session_state.keys()) if k.startswith("proposal_cb_") or k.startswith("sel_all_")]:
+        del st.session_state[_k]
+
+
+MISSING_FIELD_LABELS = (
+    ("original_title", "英文片名", "Original Title"),
+    ("year", "年份", "Year"),
+    ("genres", "类型", "Genres"),
+    ("imdb_rating", "IMDb评分", "IMDb Rating"),
+    ("runtime", "片长", "Runtime"),
+    ("country", "地区", "Country"),
+    ("director", "导演", "Director"),
+    ("actors", "演员", "Actors"),
+    ("plot", "英文简介", "English Plot"),
+    ("title_zh", "中文片名", "Chinese Title"),
+    ("director_zh", "中文导演", "Chinese Director"),
+    ("actors_zh", "中文演员", "Chinese Actors"),
+    ("plot_zh", "中文简介", "Chinese Plot"),
+    ("douban_rating", "豆瓣评分", "Douban Rating"),
+    ("imdb_id", "IMDb ID", "IMDb ID"),
+    ("tmdb_id", "TMDB ID", "TMDB ID"),
+)
+
+
+def _sync_missing_filter():
+    """Push the settings multiselect/radio into the global poster-wall filter."""
+    lang = st.session_state.get('lang', 'zh')
+    lang_zh = lang == 'zh'
+    lang_suffix = f"_{lang}"
+    label_to_key = {(f[1] if lang_zh else f[2]): f[0] for f in MISSING_FIELD_LABELS}
+    labels = st.session_state.get(f"missing_field_multiselect{lang_suffix}", []) or []
+    st.session_state.missing_filter_fields = tuple(label_to_key[l] for l in labels if l in label_to_key)
+    mode_val = st.session_state.get(f"missing_mode_radio{lang_suffix}", "") or ""
+    st.session_state.missing_filter_mode = "all" if ("全部" in mode_val or "all" in mode_val.lower()) else "any"
+
+
 
 @st.dialog("✨ Batch Meta")
 def batch_metadata_dialog(covers_dir):
@@ -3725,6 +4307,11 @@ def batch_metadata_dialog(covers_dir):
         idx = st.session_state.batch_index
         total = len(targets)
         batch_mode = st.session_state.get('batch_mode', 'basic')
+        allowed_fields = (
+            BATCH_BASIC_FIELDS
+            if batch_mode == 'basic'
+            else st.session_state.get('batch_fill_fields', ())
+        )
         
         # Phase 1: Analysis loop
         if not st.session_state.get('batch_analysis_done', False):
@@ -3777,9 +4364,32 @@ def batch_metadata_dialog(covers_dir):
                 proposal["category"] = "ignore"
             else:
                 best = None
+                search_queries = [m_title]
+                details_prefetched = False
+                known_reference = False
+                grounding_score = 0
                 if key:
+                    existing_tmdb_id = str(m_dict.get('tmdb_id') or '').strip()
+                    existing_imdb_id = str(m_dict.get('imdb_id') or '').strip()
+                    if existing_tmdb_id:
+                        try:
+                            proposal["details_en"] = get_tmdb_movie_details(
+                                existing_tmdb_id, key, lang='en-US'
+                            )
+                            proposal["details_zh"] = get_tmdb_movie_details(
+                                existing_tmdb_id, key, lang='zh-CN'
+                            )
+                            best = proposal["details_en"] or proposal["details_zh"]
+                            details_prefetched = bool(best)
+                            known_reference = details_prefetched
+                        except Exception:
+                            pass
+                    elif existing_imdb_id:
+                        best = find_tmdb_movie_by_imdb_id(existing_imdb_id, key, include_tv=True)
+                        known_reference = bool(best)
+
+                if key and not best:
                     zh_t, en_t = split_chinese_english(m_title)
-                    search_queries = [m_title]
                     
                     # Add aka splits
                     if " aka " in m_title.lower():
@@ -3812,6 +4422,12 @@ def batch_metadata_dialog(covers_dir):
                             if best:
                                 break
                                 
+                if key and not best:
+                    g_best, grounding_score = ground_tmdb_match(m_dict, key)
+                    if g_best:
+                        best = g_best
+                        known_reference = grounding_score >= 180
+
                 if best:
                     score = 0
                     r_title = best.get('title', '')
@@ -3843,19 +4459,24 @@ def batch_metadata_dialog(covers_dir):
                     proposal["best_match"] = best
                     proposal["matched_title"] = r_title
                     proposal["matched_year"] = r_year
+                    if grounding_score:
+                        proposal["score"] = max(proposal["score"], grounding_score)
+                    if known_reference:
+                        proposal["score"] = max(score, 200)
                     
-                    if score >= 100:
+                    if proposal["score"] >= 100:
                         proposal["category"] = "high_confidence"
                     else:
                         proposal["category"] = "low_confidence"
                         
                     # Fetch details
-                    try:
-                        tmdb_id = best['id']
-                        proposal["details_en"] = get_tmdb_movie_details(tmdb_id, key, lang='en-US')
-                        proposal["details_zh"] = get_tmdb_movie_details(tmdb_id, key, lang='zh-CN')
-                    except Exception:
-                        pass
+                    if not details_prefetched:
+                        try:
+                            tmdb_id = best['id']
+                            proposal["details_en"] = get_tmdb_movie_details(tmdb_id, key, lang='en-US')
+                            proposal["details_zh"] = get_tmdb_movie_details(tmdb_id, key, lang='zh-CN')
+                        except Exception:
+                            pass
                 else:
                     imdb_cands = []
                     if key:
@@ -3868,7 +4489,7 @@ def batch_metadata_dialog(covers_dir):
                                     
                     if imdb_cands:
                         for cand in imdb_cands:
-                            tmdb_movie = find_tmdb_movie_by_imdb_id(cand['id'], key)
+                            tmdb_movie = find_tmdb_movie_by_imdb_id(cand['id'], key, include_tv=True)
                             if tmdb_movie:
                                 best = tmdb_movie
                                 try:
@@ -3887,6 +4508,7 @@ def batch_metadata_dialog(covers_dir):
                                 
                     if not best:
                         if imdb_cands:
+                            imdb_cands = rank_imdb_candidates(imdb_cands, m_dict)
                             cand = imdb_cands[0]
                             proposal["category"] = "imdb_only"
                             proposal["matched_title"] = cand["title"]
@@ -3932,6 +4554,16 @@ def batch_metadata_dialog(covers_dir):
                 actors_zh = ", ".join(cast_names_zh) if cast_names_zh else ""
                 
                 plot_zh = (details_zh or details).get('overview')
+                # Only accept genuinely Chinese values; TMDB zh-CN often returns
+                # empty or untranslated (English) names, which are not usable here.
+                if not contains_chinese(title_zh):
+                    title_zh = ""
+                if not contains_chinese(director_zh):
+                    director_zh = ""
+                if not contains_chinese(actors_zh):
+                    actors_zh = ""
+                if not contains_chinese(plot_zh):
+                    plot_zh = ""
                 countries = [c.get('name') for c in details.get('production_countries', [])]
                 country = ", ".join(countries) if countries else ""
                 if country:
@@ -3945,7 +4577,9 @@ def batch_metadata_dialog(covers_dir):
                 external_ids = details.get('external_ids', {})
                 imdb_id = external_ids.get('imdb_id')
                 
-                wmdb_data = fetch_wmdb_ratings(imdb_id if imdb_id else m_title)
+                wmdb_data = None
+                if 'douban_rating' in allowed_fields or 'imdb_rating' in allowed_fields:
+                    wmdb_data = fetch_wmdb_ratings(imdb_id if imdb_id else m_title)
                 douban_id = None
                 douban_rating = None
                 imdb_rating = details.get('vote_average')
@@ -3958,12 +4592,12 @@ def batch_metadata_dialog(covers_dir):
                         
                 proposal["poster_path"] = details.get('poster_path')
                 
-                existing = get_movie_details(m_id)
+                existing = dict(get_movie_details(m_id) or {})
                 def use_new_if_empty(k, new_val):
-                    return existing[k] if existing[k] else new_val
+                    return existing.get(k) if not is_missing_value(k, existing.get(k)) else new_val
                     
                 if batch_mode == 'basic':
-                    proposal["proposed_fields"] = {
+                    candidate_fields = {
                         'original_title': use_new_if_empty('original_title', original_title),
                         'genres': use_new_if_empty('genres', genres),
                         'year': use_new_if_empty('year', year),
@@ -3976,7 +4610,7 @@ def batch_metadata_dialog(covers_dir):
                         'imdb_rating': use_new_if_empty('imdb_rating', imdb_rating),
                     }
                 else: # extra / all
-                    proposal["proposed_fields"] = {
+                    candidate_fields = {
                         'original_title': use_new_if_empty('original_title', original_title),
                         'director': use_new_if_empty('director', director),
                         'actors': use_new_if_empty('actors', actors),
@@ -3997,27 +4631,32 @@ def batch_metadata_dialog(covers_dir):
                         'imdb_rating': use_new_if_empty('imdb_rating', imdb_rating),
                         'douban_rating': use_new_if_empty('douban_rating', douban_rating),
                     }
+                proposal["proposed_fields"] = filter_batch_fields(candidate_fields, allowed_fields)
             elif proposal["category"] == "imdb_only":
-                existing = get_movie_details(m_id)
+                existing = dict(get_movie_details(m_id) or {})
                 def use_new_if_empty(k, new_val):
-                    return existing[k] if existing[k] else new_val
-                    
-                proposal["proposed_fields"] = {
+                    return existing.get(k) if not is_missing_value(k, existing.get(k)) else new_val
+
+                web_zh = guess_chinese_title_via_web(m_title, "", m_year)
+                if not contains_chinese(web_zh):
+                    web_zh = ""
+                proposal["proposed_fields"] = filter_batch_fields({
                     'original_title': use_new_if_empty('original_title', proposal["matched_title"]),
                     'year': use_new_if_empty('year', proposal["matched_year"]),
                     'actors': use_new_if_empty('actors', proposal["imdb_actors"]),
                     'imdb_id': use_new_if_empty('imdb_id', proposal["imdb_id"]),
-                }
+                    'title_zh': use_new_if_empty('title_zh', web_zh),
+                }, allowed_fields)
             elif proposal["web_desc"]:
-                existing = get_movie_details(m_id)
+                existing = dict(get_movie_details(m_id) or {})
                 def use_new_if_empty(k, new_val):
-                    return existing[k] if existing[k] else new_val
+                    return existing.get(k) if not is_missing_value(k, existing.get(k)) else new_val
                     
-                proposal["proposed_fields"] = {
+                proposal["proposed_fields"] = filter_batch_fields({
                     'plot': use_new_if_empty('plot', proposal["web_desc"]),
                     'plot_zh': use_new_if_empty('plot_zh', proposal["web_desc"]),
                     'year': use_new_if_empty('year', proposal["matched_year"])
-                }
+                }, allowed_fields)
                 
             if "batch_analysis_proposals" not in st.session_state:
                 st.session_state.batch_analysis_proposals = []
@@ -4031,58 +4670,96 @@ def batch_metadata_dialog(covers_dir):
             proposals = st.session_state.batch_analysis_proposals
             
             # Split proposals into groups
-            high_conf = [p for p in proposals if p['category'] == 'high_confidence']
-            low_conf = [p for p in proposals if p['category'] == 'low_confidence']
-            imdb_only = [p for p in proposals if p['category'] == 'imdb_only']
-            not_found = [p for p in proposals if p['category'] in ('failed', 'not_found')]
+            high_conf = [p for p in proposals if p['category'] == 'high_confidence' and p.get('proposed_fields')]
+            low_conf = [p for p in proposals if p['category'] == 'low_confidence' and p.get('proposed_fields')]
+            imdb_only = [p for p in proposals if p['category'] == 'imdb_only' and p.get('proposed_fields')]
+            not_found = [p for p in proposals if p['category'] in ('failed', 'not_found') and p.get('proposed_fields')]
             ignored = [p for p in proposals if p['category'] == 'ignore']
+            no_data = [p for p in proposals if p['category'] != 'ignore' and not p.get('proposed_fields')]
             
             # Show summary
-            summary_msg = f"📊 分析完毕：共 {len(proposals)} 部 | 置信高 {len(high_conf)} | 模糊 {len(low_conf)} | 仅 IMDb {len(imdb_only)} | 忽略 {len(ignored)} | 未找到 {len(not_found)}"
+            summary_msg = f"📊 分析完毕：共 {len(proposals)} 部 | 置信高 {len(high_conf)} | 模糊 {len(low_conf)} | 仅 IMDb {len(imdb_only)} | 无新数据 {len(no_data)} | 忽略 {len(ignored)} | 未找到 {len(not_found)}"
             if st.session_state.lang != 'zh':
-                summary_msg = f"📊 Analysis complete: {len(proposals)} total | High-conf {len(high_conf)} | Fuzzy {len(low_conf)} | IMDb Only {len(imdb_only)} | Ignored {len(ignored)} | Not Found {len(not_found)}"
+                summary_msg = f"📊 Analysis complete: {len(proposals)} total | High-conf {len(high_conf)} | Fuzzy {len(low_conf)} | IMDb Only {len(imdb_only)} | No new data {len(no_data)} | Ignored {len(ignored)} | Not Found {len(not_found)}"
             st.info(summary_msg)
             
             selected_actions = {}
             
-            # Render groups
+            # Render groups as bordered sections to avoid expander icon font overlap
             if high_conf:
-                with st.expander(f"✅ 匹配有把握 ({len(high_conf)} 部)" if st.session_state.lang == 'zh' else f"✅ High Confidence Matches ({len(high_conf)})", expanded=True):
-                    sel_all = st.checkbox("全选高置信度" if st.session_state.lang == 'zh' else "Select All High Conf", value=True, key="sel_all_high")
+                high_ids = [p['id'] for p in high_conf]
+                with st.container(border=True):
+                    st.markdown(f"**✅ 匹配有把握 ({len(high_conf)} 部)**" if st.session_state.lang == 'zh' else f"**✅ High Confidence Matches ({len(high_conf)})**")
+                    st.session_state.setdefault("sel_all_high", True)
+                    for mid in high_ids:
+                        st.session_state.setdefault(f"proposal_cb_{mid}", True)
+                    st.checkbox("全选高置信度" if st.session_state.lang == 'zh' else "Select All High Conf", key="sel_all_high", on_change=_sync_batch_group, args=("sel_all_high", high_ids))
                     for p in high_conf:
                         lbl = f"{p['title']} ➡️ {p['matched_title']} ({p['matched_year']})"
-                        selected_actions[p['id']] = st.checkbox(lbl, value=sel_all, key=f"proposal_cb_{p['id']}")
+                        selected_actions[p['id']] = st.checkbox(lbl, key=f"proposal_cb_{p['id']}")
             
             if low_conf:
-                with st.expander(f"⚠️ 匹配无把握 / 模糊 ({len(low_conf)} 部)" if st.session_state.lang == 'zh' else f"⚠️ Low Confidence Matches ({len(low_conf)})", expanded=True):
-                    sel_all = st.checkbox("全选模糊匹配" if st.session_state.lang == 'zh' else "Select All Fuzzy", value=True, key="sel_all_low")
+                low_ids = [p['id'] for p in low_conf]
+                with st.container(border=True):
+                    st.markdown(f"**⚠️ 匹配无把握 / 模糊 ({len(low_conf)} 部)**" if st.session_state.lang == 'zh' else f"**⚠️ Low Confidence Matches ({len(low_conf)})**")
+                    st.session_state.setdefault("sel_all_low", True)
+                    for mid in low_ids:
+                        st.session_state.setdefault(f"proposal_cb_{mid}", True)
+                    st.checkbox("全选模糊匹配" if st.session_state.lang == 'zh' else "Select All Fuzzy", key="sel_all_low", on_change=_sync_batch_group, args=("sel_all_low", low_ids))
                     for p in low_conf:
                         lbl = f"{p['title']} ➡️ {p['matched_title']} ({p['matched_year']}) [评分: {p['score']}]"
-                        selected_actions[p['id']] = st.checkbox(lbl, value=sel_all, key=f"proposal_cb_{p['id']}")
+                        selected_actions[p['id']] = st.checkbox(lbl, key=f"proposal_cb_{p['id']}")
                         
             if imdb_only:
-                with st.expander(f"🎬 仅 IMDb 有匹配 (TMDB 未收录) ({len(imdb_only)} 部)" if st.session_state.lang == 'zh' else f"🎬 IMDb Only Matches ({len(imdb_only)})", expanded=True):
-                    sel_all = st.checkbox("全选 IMDb 匹配" if st.session_state.lang == 'zh' else "Select All IMDb Only", value=True, key="sel_all_imdb")
+                imdb_ids = [p['id'] for p in imdb_only]
+                with st.container(border=True):
+                    st.markdown(f"**🎬 仅 IMDb 有匹配 (TMDB 未收录) ({len(imdb_only)} 部)**" if st.session_state.lang == 'zh' else f"**🎬 IMDb Only Matches ({len(imdb_only)})**")
+                    st.session_state.setdefault("sel_all_imdb", True)
+                    for mid in imdb_ids:
+                        st.session_state.setdefault(f"proposal_cb_{mid}", True)
+                    st.checkbox("全选 IMDb 匹配" if st.session_state.lang == 'zh' else "Select All IMDb Only", key="sel_all_imdb", on_change=_sync_batch_group, args=("sel_all_imdb", imdb_ids))
                     for p in imdb_only:
                         actor_preview = f" (主演: {p['imdb_actors']})" if p['imdb_actors'] else ""
                         lbl = f"{p['title']} ➡️ [IMDb] {p['matched_title']} ({p['matched_year']}){actor_preview}"
-                        selected_actions[p['id']] = st.checkbox(lbl, value=sel_all, key=f"proposal_cb_{p['id']}")
+                        selected_actions[p['id']] = st.checkbox(lbl, key=f"proposal_cb_{p['id']}")
                         
             if ignored:
-                with st.expander(f"🚫 建议忽略 (TV剧集/网页视频/测试数据) ({len(ignored)} 部)" if st.session_state.lang == 'zh' else f"🚫 Ignored Candidates ({len(ignored)})", expanded=False):
-                    sel_all = st.checkbox("全选忽略项" if st.session_state.lang == 'zh' else "Select All Ignored", value=False, key="sel_all_ignore")
+                ignored_ids = [p['id'] for p in ignored]
+                with st.container(border=True):
+                    st.markdown(f"**🚫 建议忽略 (TV剧集/网页视频/测试数据) ({len(ignored)} 部)**" if st.session_state.lang == 'zh' else f"**🚫 Ignored Candidates ({len(ignored)})**")
+                    st.session_state.setdefault("sel_all_ignore", False)
+                    for mid in ignored_ids:
+                        st.session_state.setdefault(f"proposal_cb_{mid}", False)
+                    st.checkbox("全选忽略项" if st.session_state.lang == 'zh' else "Select All Ignored", key="sel_all_ignore", on_change=_sync_batch_group, args=("sel_all_ignore", ignored_ids))
                     for p in ignored:
                         lbl = f"{p['title']} ({p['ignore_reason']})"
-                        selected_actions[p['id']] = st.checkbox(lbl, value=sel_all, key=f"proposal_cb_{p['id']}")
+                        selected_actions[p['id']] = st.checkbox(lbl, key=f"proposal_cb_{p['id']}")
                         
             if not_found:
-                with st.expander(f"❌ 均未找到 (TMDB & IMDb 均无匹配) ({len(not_found)} 部)" if st.session_state.lang == 'zh' else f"❌ Not Found ({len(not_found)})", expanded=False):
-                    sel_all = st.checkbox("全选未找到项 (使用网页搜索结果填充)" if st.session_state.lang == 'zh' else "Select All Not Found (fill with web snippet)", value=False, key="sel_all_failed")
+                failed_ids = [p['id'] for p in not_found]
+                with st.container(border=True):
+                    st.markdown(f"**❌ 均未找到 (TMDB & IMDb 均无匹配) ({len(not_found)} 部)**" if st.session_state.lang == 'zh' else f"**❌ Not Found ({len(not_found)})**")
+                    st.session_state.setdefault("sel_all_failed", False)
+                    for mid in failed_ids:
+                        st.session_state.setdefault(f"proposal_cb_{mid}", False)
+                    st.checkbox("全选未找到项 (使用网页搜索结果填充)" if st.session_state.lang == 'zh' else "Select All Not Found (fill with web snippet)", key="sel_all_failed", on_change=_sync_batch_group, args=("sel_all_failed", failed_ids))
                     for p in not_found:
                         web_preview = p.get('web_desc', '')
                         web_preview = web_preview[:50] + "..." if web_preview else ("无搜索结果" if st.session_state.lang == 'zh' else "No results")
                         lbl = f"{p['title']} ({web_preview})"
-                        selected_actions[p['id']] = st.checkbox(lbl, value=sel_all, key=f"proposal_cb_{p['id']}")
+                        selected_actions[p['id']] = st.checkbox(lbl, key=f"proposal_cb_{p['id']}")
+
+            if no_data:
+                no_data_ids = [p['id'] for p in no_data]
+                with st.container(border=True):
+                    st.markdown(f"**⛔ 无可用新数据 (源站缺少所选字段) ({len(no_data)} 部)**" if st.session_state.lang == 'zh' else f"**⛔ No new data available (source lacks selected fields) ({len(no_data)})**")
+                    st.session_state.setdefault("sel_all_nodata", False)
+                    for mid in no_data_ids:
+                        st.session_state.setdefault(f"proposal_cb_{mid}", False)
+                    st.checkbox("全选无数据项" if st.session_state.lang == 'zh' else "Select All No-Data Items", key="sel_all_nodata", on_change=_sync_batch_group, args=("sel_all_nodata", no_data_ids))
+                    for p in no_data:
+                        lbl = f"{p['title']} ➡️ {p['matched_title'] or '无匹配'}"
+                        selected_actions[p['id']] = st.checkbox(lbl, key=f"proposal_cb_{p['id']}")
                         
             # Apply / Cancel buttons
             btn_col1, btn_col2 = st.columns(2)
@@ -4100,11 +4777,17 @@ def batch_metadata_dialog(covers_dir):
                         m_title = p["title"]
                         
                         if selected_actions.get(m_id, False):
+                            fields_to_apply = filter_batch_fields(
+                                p.get("proposed_fields", {}), allowed_fields
+                            )
                             local_cover = os.path.join(covers_dir, f"{m_id}.jpg")
                             poster_url = None
+                            poster_available = False
                             if p.get("poster_path"):
                                 if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
-                                    download_tmdb_poster(p["poster_path"], local_cover)
+                                    poster_available = download_tmdb_poster(
+                                        p["poster_path"], local_cover
+                                    )
                             elif p.get("category") == "imdb_only" and p.get("imdb_cover"):
                                 poster_url = p["imdb_cover"]
                                 if not (os.path.exists(local_cover) and os.path.getsize(local_cover) > 0):
@@ -4113,6 +4796,7 @@ def batch_metadata_dialog(covers_dir):
                                         if img_r.status_code == 200:
                                             with open(local_cover, 'wb') as img_f:
                                                 img_f.write(img_r.content)
+                                            poster_available = True
                                     except Exception:
                                         pass
                                 
@@ -4121,14 +4805,28 @@ def batch_metadata_dialog(covers_dir):
                                 upload_poster_to_gdrive(m_id, local_cover)
                             
                             # Update DB
-                            if p["proposed_fields"]:
-                                update_movie_fields(m_id, p["proposed_fields"])
-                            success_count += 1
+                            if fields_to_apply:
+                                update_movie_fields(m_id, fields_to_apply)
+                            row_now = dict(get_movie_details(m_id) or {})
+                            record_batch_field_attempts(
+                                m_id,
+                                [
+                                    f for f in allowed_fields
+                                    if f not in fields_to_apply and is_empty_value(row_now.get(f))
+                                ],
+                            )
+                            if fields_to_apply or poster_available:
+                                success_count += 1
+                            else:
+                                skip_count += 1
                         else:
                             skip_count += 1
                             
                     st.session_state.batch_running = False
                     st.session_state.batch_analysis_done = False
+                    st.session_state.batch_analysis_proposals = []
+                    st.session_state.batch_fill_fields = ()
+                    _clear_batch_selection_state()
                     st.session_state.show_batch_dialog = False
                     st.toast(f"✅ 批量填充成功！已填充 {success_count} 部，忽略/跳过 {skip_count} 部")
                     st.rerun()
@@ -4137,6 +4835,9 @@ def batch_metadata_dialog(covers_dir):
                 if st.button("❌ 取消并关闭", use_container_width=True, key="batch_cancel_btn"):
                     st.session_state.batch_running = False
                     st.session_state.batch_analysis_done = False
+                    st.session_state.batch_analysis_proposals = []
+                    st.session_state.batch_fill_fields = ()
+                    _clear_batch_selection_state()
                     st.session_state.show_batch_dialog = False
                     st.rerun()
 
@@ -4144,31 +4845,40 @@ def batch_metadata_dialog(covers_dir):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Count basic info missing
-        cur.execute("""
-            SELECT COUNT(*) FROM movies
-            WHERE (original_title IS NULL OR original_title = ''
-               OR year IS NULL OR year = 0
-               OR genres IS NULL OR genres = ''
-               OR imdb_rating IS NULL OR imdb_rating = 0
-               OR runtime IS NULL OR runtime = 0
-               OR country IS NULL OR country = '')
-              AND (tmdb_id IS NULL OR tmdb_id = '')
-              AND (imdb_id IS NULL OR imdb_id = '')
-        """)
+        # Count basic info missing, excluding fields already known to be source-less
+        basic_where = compose_missing_where(BASIC_FIELD_CONDITIONS)
+        cur.execute(f"SELECT COUNT(*) FROM movies WHERE {basic_where}")
         basic_count = cur.fetchone()[0]
-        
-        # Count supplementary info missing individually
-        cur.execute("SELECT COUNT(*) FROM movies WHERE title_zh IS NULL OR title_zh = ''")
-        cnt_title_zh = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM movies WHERE plot IS NULL OR plot = ''")
-        cnt_plot = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM movies WHERE plot_zh IS NULL OR plot_zh = ''")
-        cnt_plot_zh = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM movies WHERE director_zh IS NULL OR director_zh = ''")
-        cnt_dir_zh = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM movies WHERE actors_zh IS NULL OR actors_zh = ''")
-        cnt_act_zh = cur.fetchone()[0]
+
+        basic_label_zh = {
+            "original_title": "英文片名",
+            "year": "年份",
+            "genres": "类型",
+            "imdb_rating": "IMDb评分",
+            "runtime": "片长",
+            "country": "地区",
+        }
+        basic_field_counts = []
+        for field, cond in BASIC_FIELD_CONDITIONS:
+            cur.execute(f"SELECT COUNT(*) FROM movies WHERE {missing_field_cond(field, cond)}")
+            basic_field_counts.append((basic_label_zh[field], cur.fetchone()[0]))
+
+        # Count supplementary info missing per field, excluding source-less attempts
+        extra_conds = dict(EXTRA_FIELD_CONDITIONS)
+        extra_counts = {}
+        for field, cond in EXTRA_FIELD_CONDITIONS:
+            cur.execute(f"SELECT COUNT(*) FROM movies WHERE {missing_field_cond(field, cond)}")
+            extra_counts[field] = cur.fetchone()[0]
+        cnt_title_zh = extra_counts["title_zh"]
+        cnt_plot = extra_counts["plot"]
+        cnt_plot_zh = extra_counts["plot_zh"]
+        cnt_dir_zh = extra_counts["director_zh"]
+        cnt_act_zh = extra_counts["actors_zh"]
+        cnt_douban = extra_counts["douban_rating"]
+
+        # Fields confirmed missing at the source are listed separately and excluded above
+        cur.execute("SELECT field, COUNT(*) AS c FROM batch_field_attempts GROUP BY field ORDER BY c DESC")
+        attempt_rows = cur.fetchall()
         conn.close()
         
         key = load_tmdb_key()
@@ -4180,27 +4890,52 @@ def batch_metadata_dialog(covers_dir):
             return
         
         batch_limit = st.slider(t("batch_limit_label"), min_value=10, max_value=500, value=50, step=10, key="dialog_batch_limit")
+
+        if attempt_rows:
+            field_label_zh = dict(basic_label_zh)
+            field_label_zh.update({
+                "title_zh": "中文片名",
+                "plot_zh": "中文简介",
+                "plot": "英文简介",
+                "director_zh": "中文导演",
+                "actors_zh": "中文演员",
+                "douban_rating": "豆瓣评分",
+            })
+            field_label_en = {
+                "original_title": "Original Title",
+                "year": "Year",
+                "genres": "Genres",
+                "imdb_rating": "IMDb Rating",
+                "runtime": "Runtime",
+                "country": "Country",
+                "title_zh": "Chinese Title",
+                "plot_zh": "Chinese Plot",
+                "plot": "English Plot",
+                "director_zh": "Chinese Director",
+                "actors_zh": "Chinese Actors",
+                "douban_rating": "Douban Rating",
+            }
+            labels = field_label_zh if st.session_state.lang == 'zh' else field_label_en
+            attempt_parts = [f"{labels.get(f, f)} {c}" for f, c in attempt_rows]
+            st.caption(
+                ("源站确认缺失，已不再列入待补：" if st.session_state.lang == 'zh' else "Confirmed missing at source, excluded from queue: ")
+                + " / ".join(attempt_parts)
+            )
         
         tab_basic, tab_extra = st.tabs([t("batch_mode_basic"), t("batch_mode_extra")])
         
         with tab_basic:
             st.caption(t("batch_mode_basic_help"))
+            st.caption(" / ".join(f"{label} 缺 {count}" for label, count in basic_field_counts) if st.session_state.lang == 'zh' else " / ".join(f"{label}: {count} missing" for label, count in basic_field_counts))
             st.markdown(f"**{basic_count}** 部 {t('batch_mode_basic_count')}" if st.session_state.lang == 'zh' else f"**{basic_count}** movies {t('batch_mode_basic_count')}")
             bc1, bc2 = st.columns(2)
             with bc1:
                 if st.button(t("batch_start_btn"), use_container_width=True, key="batch_start_basic", disabled=basic_count == 0):
                     conn = get_db_connection()
                     cur = conn.cursor()
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT id, title, year FROM movies
-                        WHERE (original_title IS NULL OR original_title = ''
-                           OR year IS NULL OR year = 0
-                           OR genres IS NULL OR genres = ''
-                           OR imdb_rating IS NULL OR imdb_rating = 0
-                           OR runtime IS NULL OR runtime = 0
-                           OR country IS NULL OR country = '')
-                          AND (tmdb_id IS NULL OR tmdb_id = '')
-                          AND (imdb_id IS NULL OR imdb_id = '')
+                        WHERE {basic_where}
                         LIMIT ?
                     """, (batch_limit,))
                     targets = cur.fetchall()
@@ -4216,6 +4951,8 @@ def batch_metadata_dialog(covers_dir):
                         st.session_state.batch_paused = False
                         st.session_state.batch_logs = []
                         st.session_state.batch_mode = 'basic'
+                        st.session_state.batch_fill_fields = BATCH_BASIC_FIELDS
+                        _clear_batch_selection_state()
                         st.rerun()
             with bc2:
                 if st.button("关闭" if st.session_state.lang == 'zh' else "Close", use_container_width=True, key="batch_close_basic"):
@@ -4231,23 +4968,37 @@ def batch_metadata_dialog(covers_dir):
             fill_plot = st.checkbox(f"📄 英文简介 (缺少 {cnt_plot} 条)" if st.session_state.lang == 'zh' else f"📄 English Plot (missing {cnt_plot})", value=(cnt_plot > 0))
             fill_dir_zh = st.checkbox(f"🎥 中文导演名 (缺少 {cnt_dir_zh} 条)" if st.session_state.lang == 'zh' else f"🎥 Chinese Director (missing {cnt_dir_zh})", value=(cnt_dir_zh > 0))
             fill_act_zh = st.checkbox(f"🎭 中文演员名 (缺少 {cnt_act_zh} 条)" if st.session_state.lang == 'zh' else f"🎭 Chinese Actors (missing {cnt_act_zh})", value=(cnt_act_zh > 0))
+            fill_douban = st.checkbox(f"⭐ 豆瓣评分 (缺少 {cnt_douban} 条)" if st.session_state.lang == 'zh' else f"⭐ Douban Rating (missing {cnt_douban})", value=False)
+
+            selected_item_count = 0
+            if fill_title_zh: selected_item_count += cnt_title_zh
+            if fill_plot_zh: selected_item_count += cnt_plot_zh
+            if fill_plot: selected_item_count += cnt_plot
+            if fill_dir_zh: selected_item_count += cnt_dir_zh
+            if fill_act_zh: selected_item_count += cnt_act_zh
+            if fill_douban: selected_item_count += cnt_douban
             
             conditions = []
-            if fill_plot: conditions.append("(plot IS NULL OR plot = '')")
-            if fill_plot_zh: conditions.append("(plot_zh IS NULL OR plot_zh = '')")
-            if fill_title_zh: conditions.append("(title_zh IS NULL OR title_zh = '')")
-            if fill_dir_zh: conditions.append("(director_zh IS NULL OR director_zh = '')")
-            if fill_act_zh: conditions.append("(actors_zh IS NULL OR actors_zh = '')")
+            if fill_plot: conditions.append(missing_field_cond("plot", extra_conds["plot"]))
+            if fill_plot_zh: conditions.append(missing_field_cond("plot_zh", extra_conds["plot_zh"]))
+            if fill_title_zh: conditions.append(missing_field_cond("title_zh", extra_conds["title_zh"]))
+            if fill_dir_zh: conditions.append(missing_field_cond("director_zh", extra_conds["director_zh"]))
+            if fill_act_zh: conditions.append(missing_field_cond("actors_zh", extra_conds["actors_zh"]))
+            if fill_douban: conditions.append(missing_field_cond("douban_rating", extra_conds["douban_rating"]))
             
             where_clause = " OR ".join(conditions) if conditions else "1=0"
             
             conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute(f"SELECT COUNT(*) FROM movies WHERE {where_clause}")
+            cur.execute(f"SELECT COUNT(*) FROM movies WHERE ({where_clause})")
             extra_count = cur.fetchone()[0]
             conn.close()
             
-            st.markdown(f"**{extra_count}** 部 {t('batch_mode_extra_count')}" if st.session_state.lang == 'zh' else f"**{extra_count}** movies {t('batch_mode_extra_count')}")
+            st.markdown(
+                f"**{extra_count}** 部影片 / **{selected_item_count}** 处 {t('batch_mode_extra_count')}"
+                if st.session_state.lang == 'zh'
+                else f"**{extra_count}** movies / **{selected_item_count}** fields {t('batch_mode_extra_count')}"
+            )
             ec1, ec2 = st.columns(2)
             with ec1:
                 if st.button(t("batch_start_btn"), use_container_width=True, key="batch_start_extra", disabled=extra_count == 0):
@@ -4255,7 +5006,7 @@ def batch_metadata_dialog(covers_dir):
                     cur = conn.cursor()
                     cur.execute(f"""
                         SELECT id, title, year FROM movies
-                        WHERE {where_clause}
+                        WHERE ({where_clause})
                         LIMIT ?
                     """, (batch_limit,))
                     targets = cur.fetchall()
@@ -4271,6 +5022,15 @@ def batch_metadata_dialog(covers_dir):
                         st.session_state.batch_paused = False
                         st.session_state.batch_logs = []
                         st.session_state.batch_mode = 'extra'
+                        _clear_batch_selection_state()
+                        st.session_state.batch_fill_fields = build_extra_fill_fields(
+                            fill_title_zh=fill_title_zh,
+                            fill_plot_zh=fill_plot_zh,
+                            fill_plot=fill_plot,
+                            fill_dir_zh=fill_dir_zh,
+                            fill_act_zh=fill_act_zh,
+                            fill_douban_rating=fill_douban,
+                        )
                         st.rerun()
             with ec2:
                 if st.button("关闭" if st.session_state.lang == 'zh' else "Close", use_container_width=True, key="batch_close_extra"):
@@ -4415,6 +5175,43 @@ def render_settings_popover(total_count, seen_count, text_color, sub_text_color,
             st.session_state.show_movie_edit_dialog = False
             st.session_state.show_batch_dialog = False
             st.rerun()
+
+        # Missing metadata explorer (drives the left poster wall as a filter)
+        st.markdown("---")
+        lang_zh = st.session_state.lang == 'zh'
+        st.markdown("**" + ("🔎 缺失元数据筛选" if lang_zh else "🔎 Missing Metadata Filter") + "**")
+        st.markdown(f"<div style='font-size:0.82rem;color:{sub_text_color};margin-bottom:0.5rem;'>" + ("选择元数据项组合后，左侧海报墙只列出缺失这些项的影片。" if lang_zh else "Pick a field combination; the left poster wall will show only movies missing them.") + "</div>", unsafe_allow_html=True)
+        lang_suffix = f"_{st.session_state.lang}"
+        label_to_key = {(f[1] if lang_zh else f[2]): f[0] for f in MISSING_FIELD_LABELS}
+        key_to_label = {v: k for k, v in label_to_key.items()}
+        current_fields = st.session_state.get('missing_filter_fields', ())
+        default_labels = [key_to_label[k] for k in current_fields if k in key_to_label]
+        st.multiselect(
+            ("元数据项组合" if lang_zh else "Field combination"),
+            options=list(label_to_key.keys()),
+            default=default_labels,
+            key=f"missing_field_multiselect{lang_suffix}",
+            on_change=_sync_missing_filter,
+        )
+        st.radio(
+            ("筛选口径" if lang_zh else "Filter mode"),
+            [("缺任一项" if lang_zh else "Missing any"), ("缺全部项" if lang_zh else "Missing all")],
+            index=0 if st.session_state.get('missing_filter_mode', 'any') == 'any' else 1,
+            horizontal=True,
+            key=f"missing_mode_radio{lang_suffix}",
+            on_change=_sync_missing_filter,
+        )
+        if current_fields:
+            names = ", ".join(key_to_label.get(k, k) for k in current_fields)
+            mode_txt = ("缺任一" if st.session_state.get('missing_filter_mode', 'any') == 'any' else "缺全部")
+            st.caption(("当前海报墙筛选：" if lang_zh else "Current wall filter: ") + names + f" ({mode_txt})")
+            if st.button("✕ " + ("清除缺失筛选" if lang_zh else "Clear missing filter"), use_container_width=True, key="missing_filter_clear_btn"):
+                st.session_state.missing_filter_fields = ()
+                st.session_state.missing_filter_mode = "any"
+                for k in list(st.session_state.keys()):
+                    if k.startswith("missing_field_multiselect") or k.startswith("missing_mode_radio"):
+                        del st.session_state[k]
+                st.rerun()
 
         # Cloud sync section (local only)
         if not is_cloud:
@@ -5500,6 +6297,12 @@ with st.container():
 
     if st.session_state.get('show_batch_dialog', False):
         batch_metadata_dialog(covers_dir)
+    elif st.session_state.get('show_match_dialog', False):
+        _match_movie = get_movie_details(st.session_state.selected_movie_id)
+        if _match_movie:
+            movie_match_dialog(_match_movie)
+        else:
+            st.session_state.show_match_dialog = False
     elif st.session_state.get('show_movie_edit_dialog', False):
         movie_edit_dialog(st.session_state.get('edit_target_movie', None))
     elif st.session_state.get('show_duplicate_dialog', False):
@@ -5521,6 +6324,11 @@ with st.container():
                 if st.button("↺", help=reset_help, key=f"reset_filters_btn{lang_suffix}", use_container_width=True):
                     for k in ["filter_search_input", f"filter_year_sel{lang_suffix}", f"filter_genre_sel{lang_suffix}", f"filter_country_sel{lang_suffix}", f"filter_lang_sel{lang_suffix}", f"filter_status_sel{lang_suffix}", f"filter_sort_sel{lang_suffix}", f"filter_sort_dir{lang_suffix}", f"filter_sort_prev_dim{lang_suffix}", f"filter_imdb_slider{lang_suffix}"]:
                         if k in st.session_state:
+                            del st.session_state[k]
+                    st.session_state.missing_filter_fields = ()
+                    st.session_state.missing_filter_mode = "any"
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("missing_field_multiselect") or k.startswith("missing_mode_radio"):
                             del st.session_state[k]
                     st.rerun()
             with col_y:
@@ -5608,9 +6416,10 @@ with st.container():
                 
             with col_count:
                 count_lbl = "🎬 " + ("结果" if st.session_state.lang == 'zh' else "Results")
+                miss_marker = " 🔎" if st.session_state.get('missing_filter_fields') else ""
                 st.markdown(
                     f"<div style='text-align: right; padding-top: 1.6rem;'>"
-                    f"  <span style='font-size: 0.82rem; font-weight: 600; color: {sub_text_color};'>{count_lbl}: </span>"
+                    f"  <span style='font-size: 0.82rem; font-weight: 600; color: {sub_text_color};'>{count_lbl}{miss_marker}: </span>"
                     f"  <span style='font-size: 1.15rem; font-weight: 800; color: #38BDF8;'>{len(movies_list_raw)}</span>"
                     f"</div>",
                     unsafe_allow_html=True
@@ -6344,16 +7153,12 @@ with col_details:
             if not is_cloud:
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.markdown("---")
-                col_btn1, col_btn2, col_btn3 = st.columns([1,1,0.5])
+                col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1,1,0.9,0.5])
                 with col_btn1:
                     auto_label = "智能补全" if st.session_state.lang == 'zh' else "Auto Match"
                     if st.button("✨ " + auto_label, use_container_width=True):
-                        with st.spinner("正在智能补全影片信息..."):
-                            success = autocomplete_movie_metadata_if_needed(movie['id'], movie, force=True)
-                        if success:
-                            st.session_state.auto_match_result = ('success', movie['id'])
-                        else:
-                            st.session_state.auto_match_result = ('fail', movie['id'])
+                        st.session_state.show_match_dialog = True
+                        st.session_state.match_candidate_movie = None
                         st.rerun()
                 with col_btn2:
                     edit_label = "编辑" if st.session_state.lang == 'zh' else "Edit"
@@ -6362,9 +7167,30 @@ with col_details:
                         st.session_state.show_movie_edit_dialog = True
                         st.rerun()
                 with col_btn3:
+                    reset_label = "重置元数据" if st.session_state.lang == 'zh' else "Reset Meta"
+                    if st.button("♻️ " + reset_label, use_container_width=True):
+                        st.session_state.reset_confirm = movie['id']
+                        st.rerun()
+                with col_btn4:
                     if st.button("🗑️", use_container_width=True):
                         st.session_state.delete_confirm = movie['id']
                         st.rerun()
+                if st.session_state.get('reset_confirm') == movie['id']:
+                    st.warning(
+                        "确认重置？将清空自动补全的元数据、关联 ID 与本地海报，便于重新匹配。"
+                        if st.session_state.lang == 'zh'
+                        else "Confirm reset? This clears autocompleted metadata, linked IDs and the local poster so the movie can be rematched."
+                    )
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        if st.button(t("confirm_btn"), use_container_width=True, type="primary", key="reset_confirm_yes"):
+                            reset_movie_metadata(movie['id'])
+                            del st.session_state['reset_confirm']
+                            st.rerun()
+                    with rc2:
+                        if st.button(t("cancel_btn"), use_container_width=True, key="reset_confirm_no"):
+                            del st.session_state['reset_confirm']
+                            st.rerun()
                 if st.session_state.get('delete_confirm') == movie['id']:
                     st.error(t("delete_confirm_msg"))
                     cc1, cc2 = st.columns(2)
